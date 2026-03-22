@@ -8,6 +8,7 @@ langchain-google-genai
 boto3
 langchain-community>=0.2.14,<0.3.0
 yfinance
+requests
 feedparser
 pypdf
 faiss-cpu
