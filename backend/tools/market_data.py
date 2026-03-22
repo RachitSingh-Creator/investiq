@@ -98,6 +98,21 @@ def fetch_alphavantage_overview(ticker_str: str) -> dict:
 
 
 @lru_cache(maxsize=128)
+def fetch_alphavantage_income_statement(ticker_str: str) -> dict:
+    if not settings.alphavantage_api_key:
+        return {}
+
+    url = (
+        "https://www.alphavantage.co/query"
+        f"?function=INCOME_STATEMENT&symbol={ticker_str}&apikey={settings.alphavantage_api_key}"
+    )
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+@lru_cache(maxsize=128)
 def fetch_finnhub_profile(ticker_str: str) -> dict:
     if not settings.finnhub_api_key:
         return {}
@@ -123,11 +138,53 @@ def fetch_finnhub_quote(ticker_str: str) -> dict:
 
 def _to_float(value):
     try:
-        if value in (None, ""):
+        if value in (None, "", "None"):
             return None
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _alphavantage_notice(payload: dict) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    return payload.get("Note") or payload.get("Information") or payload.get("Error Message")
+
+
+def _compute_revenue_growth_from_quarters(quarterly_reports) -> float | None:
+    if not isinstance(quarterly_reports, list) or len(quarterly_reports) < 5:
+        return None
+
+    current_quarter = _to_float((quarterly_reports[0] or {}).get("totalRevenue"))
+    year_ago_quarter = _to_float((quarterly_reports[4] or {}).get("totalRevenue"))
+
+    if current_quarter in (None, 0) or year_ago_quarter in (None, 0):
+        return None
+
+    return (current_quarter - year_ago_quarter) / year_ago_quarter
+
+
+def build_alphavantage_income_stats(company_name: str, ticker_str: str, income_statement: dict) -> dict:
+    annual_reports = income_statement.get("annualReports") if isinstance(income_statement, dict) else None
+    quarterly_reports = income_statement.get("quarterlyReports") if isinstance(income_statement, dict) else None
+
+    latest_annual_revenue = None
+    if isinstance(annual_reports, list) and annual_reports:
+        latest_annual_revenue = _to_float((annual_reports[0] or {}).get("totalRevenue"))
+
+    return {
+        "symbol": ticker_str,
+        "companyName": company_name,
+        "currency": "USD",
+        "currentPrice": "Data Not Available",
+        "marketCap": "Data Not Available",
+        "revenue": latest_annual_revenue or "Data Not Available",
+        "revenueGrowth": _compute_revenue_growth_from_quarters(quarterly_reports) or "Data Not Available",
+        "sector": "Data Not Available",
+        "industry": "Data Not Available",
+        "ebitda": "Data Not Available",
+        "debtToEquity": "Data Not Available",
+    }
 
 
 def build_alphavantage_stats(company_name: str, ticker_str: str, overview: dict) -> dict:
@@ -218,27 +275,84 @@ def fetch_market_logic(company_name: str) -> str:
             logger.warning("Chart request failed for %s (%s): %s", company_name, ticker_str, exc)
 
         market_stats = build_market_stats(company_name, ticker_str, summary_payload, chart_payload)
+        provider_fields: dict[str, list[str]] = {}
+
+        yahoo_fields = [
+            key for key, value in market_stats.items()
+            if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+        ]
+        if yahoo_fields:
+            provider_fields["yahoo"] = yahoo_fields
 
         try:
             av_overview = fetch_alphavantage_overview(ticker_str)
-            if av_overview and "Note" not in av_overview and "Information" not in av_overview:
+            av_notice = _alphavantage_notice(av_overview)
+            if av_notice:
+                logger.info("Alpha Vantage overview notice for %s (%s): %s", company_name, ticker_str, av_notice)
+            elif av_overview:
+                av_stats = build_alphavantage_stats(company_name, ticker_str, av_overview)
+                filled_fields = [
+                    key for key, value in av_stats.items()
+                    if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+                ]
+                if filled_fields:
+                    provider_fields["alphavantage_overview"] = filled_fields
                 market_stats = merge_market_stats(
                     market_stats,
-                    build_alphavantage_stats(company_name, ticker_str, av_overview),
+                    av_stats,
                 )
         except requests.RequestException as exc:
             logger.warning("Alpha Vantage request failed for %s (%s): %s", company_name, ticker_str, exc)
 
         try:
+            av_income_statement = fetch_alphavantage_income_statement(ticker_str)
+            av_income_notice = _alphavantage_notice(av_income_statement)
+            if av_income_notice:
+                logger.info("Alpha Vantage income statement notice for %s (%s): %s", company_name, ticker_str, av_income_notice)
+            elif av_income_statement:
+                av_income_stats = build_alphavantage_income_stats(company_name, ticker_str, av_income_statement)
+                filled_fields = [
+                    key for key, value in av_income_stats.items()
+                    if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+                ]
+                if filled_fields:
+                    provider_fields["alphavantage_income"] = filled_fields
+                market_stats = merge_market_stats(
+                    market_stats,
+                    av_income_stats,
+                )
+        except requests.RequestException as exc:
+            logger.warning("Alpha Vantage income statement request failed for %s (%s): %s", company_name, ticker_str, exc)
+
+        try:
             finnhub_profile = fetch_finnhub_profile(ticker_str)
             finnhub_quote = fetch_finnhub_quote(ticker_str)
             if finnhub_profile or finnhub_quote:
+                finnhub_stats = build_finnhub_stats(company_name, ticker_str, finnhub_profile, finnhub_quote)
+                filled_fields = [
+                    key for key, value in finnhub_stats.items()
+                    if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+                ]
+                if filled_fields:
+                    provider_fields["finnhub"] = filled_fields
                 market_stats = merge_market_stats(
                     market_stats,
-                    build_finnhub_stats(company_name, ticker_str, finnhub_profile, finnhub_quote),
+                    finnhub_stats,
                 )
         except requests.RequestException as exc:
             logger.warning("Finnhub request failed for %s (%s): %s", company_name, ticker_str, exc)
+
+        final_fields = [
+            key for key, value in market_stats.items()
+            if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+        ]
+        logger.info(
+            "Market data providers for %s (%s): %s | final fields: %s",
+            company_name,
+            ticker_str,
+            provider_fields or {"none": []},
+            final_fields,
+        )
 
         return json.dumps(market_stats)
         
