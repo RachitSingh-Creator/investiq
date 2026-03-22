@@ -204,6 +204,23 @@ class AgentService:
             sector = market_snapshot.get("sector", "its sector")
             sentiment = news_snapshot.get("sentiment", "neutral")
             has_news = bool(news_snapshot.get("articles"))
+            price = market_snapshot.get("currentPrice", "Data Not Available")
+
+            missing_growth = not isinstance(revenue_growth, (int, float))
+            missing_debt = not isinstance(debt_to_equity, (int, float))
+            missing_sector = not isinstance(sector, str) or sector == "Data Not Available"
+
+            if missing_growth and missing_debt and missing_sector:
+                summary = f"- {company}: Detailed fundamentals were not available from the live market feed"
+                if price != "Data Not Available":
+                    summary += f", although the latest traded price was {price}"
+                summary += ". This lowers confidence, so the biggest risk is making a decision without enough financial detail."
+                if sentiment == "negative":
+                    summary += " Recent news tone is negative, which adds pressure."
+                elif sentiment == "neutral":
+                    summary += " Recent news tone is neutral."
+                paragraphs.append(summary)
+                continue
 
             company_risks: list[str] = []
             if isinstance(revenue_growth, (int, float)):
@@ -229,7 +246,10 @@ class AgentService:
             elif not has_news:
                 company_risks.append("there is not much recent news to confirm or challenge the investment case")
 
-            company_risks.append(f"the {sector} sector can change quickly because of competition, execution risk, and shifts in demand")
+            if not missing_sector:
+                company_risks.append(f"the {sector} sector can change quickly because of competition, execution risk, and shifts in demand")
+            else:
+                company_risks.append("competition, execution risk, and demand shifts can still change the outlook quickly")
             paragraphs.append(f"- {company}: The main risks are " + ", ".join(company_risks) + ".")
 
         if document_insights == "No documents were provided.":
@@ -256,9 +276,20 @@ class AgentService:
             revenue_growth = market_snapshot.get("revenueGrowth")
             debt_to_equity = market_snapshot.get("debtToEquity")
             sentiment = news_snapshot.get("sentiment", "neutral")
+            sector = market_snapshot.get("sector", "Data Not Available")
 
             stance = "watchlist"
             reason_parts: list[str] = []
+            missing_growth = not isinstance(revenue_growth, (int, float))
+            missing_debt = not isinstance(debt_to_equity, (int, float))
+            missing_sector = not isinstance(sector, str) or sector == "Data Not Available"
+
+            if missing_growth and missing_debt and missing_sector:
+                recommendations.append(
+                    f"- {company}: Current view is watchlist. Price is {price}. "
+                    f"Reason: only limited live market data was available, so this is a low-confidence view, and recent news tone is {sentiment}."
+                )
+                continue
 
             if isinstance(revenue_growth, (int, float)) and revenue_growth >= 0.08:
                 stance = "cautiously positive"
