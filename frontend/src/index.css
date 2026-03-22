@@ -231,6 +231,16 @@ header p {
   margin-bottom: 0;
 }
 
+.market-data-note {
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background-color: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
 .market-metric {
   background-color: rgba(0, 0, 0, 0.2);
   padding: 1rem;

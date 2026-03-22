@@ -115,6 +115,9 @@ const formatMetricValue = (key: string, value: MarketValue, currencyCode?: strin
   return String(value)
 }
 
+const isMetricUnavailable = (value: MarketValue) =>
+  value === null || value === undefined || value === '' || value === 'Data Not Available'
+
 function App() {
   const [query, setQuery] = useState('');
   const [files, setFiles] = useState<File[]>([]);
@@ -195,21 +198,49 @@ function App() {
   const renderMarketData = (marketData: Record<string, MarketData>) => {
     if (!marketData || Object.keys(marketData).length === 0) return <p>No market data available.</p>;
     
-    return Object.entries(marketData).map(([company, data]) => (
-      <div key={company} className="market-data-company">
-        <h3 style={{ color: 'var(--text-main)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem' }}>
-          {company} {data.symbol ? `(${data.symbol})` : ''}
-        </h3>
-        <div className="market-data-grid">
-          {Object.entries(data).filter(([k]) => k !== 'symbol' && k !== 'companyName' && k !== 'currency').map(([key, val]) => (
-            <div className="market-metric" key={key}>
-              <span className="metric-label">{key.replace(/([A-Z])/g, ' $1').trim()}</span>
-              <span className="metric-value">{formatMetricValue(key, val, typeof data.currency === 'string' ? data.currency : undefined)}</span>
+    return Object.entries(marketData).map(([company, data]) => {
+      const metrics = Object.entries(data)
+        .filter(([k]) => k !== 'symbol' && k !== 'companyName' && k !== 'currency')
+        .map(([key, val]) => ({
+          key,
+          formattedValue: formatMetricValue(key, val, typeof data.currency === 'string' ? data.currency : undefined),
+        }))
+
+      const availableMetrics = metrics.filter(({ formattedValue }) => formattedValue !== 'Data Not Available')
+      const unavailableCount = metrics.length - availableMetrics.length
+      const hasOnlyPrice = availableMetrics.length === 1 && availableMetrics[0].key === 'currentPrice'
+
+      return (
+        <div key={company} className="market-data-company">
+          <h3 style={{ color: 'var(--text-main)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem' }}>
+            {company} {data.symbol ? `(${data.symbol})` : ''}
+          </h3>
+
+          {availableMetrics.length > 0 ? (
+            <div className="market-data-grid">
+              {availableMetrics.map(({ key, formattedValue }) => (
+                <div className="market-metric" key={key}>
+                  <span className="metric-label">{key.replace(/([A-Z])/g, ' $1').trim()}</span>
+                  <span className="metric-value">{formattedValue}</span>
+                </div>
+              ))}
             </div>
-          ))}
+          ) : (
+            <div className="market-data-note">
+              Detailed market fundamentals are not available right now for {company}.
+            </div>
+          )}
+
+          {(hasOnlyPrice || unavailableCount > 0) && (
+            <div className="market-data-note">
+              {hasOnlyPrice
+                ? `Only the latest price is available right now for ${company}.`
+                : `Some live market fields are temporarily unavailable for ${company}.`}
+            </div>
+          )}
         </div>
-      </div>
-    ));
+      )
+    });
   }
 
   return (
