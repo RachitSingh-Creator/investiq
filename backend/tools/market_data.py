@@ -147,16 +147,19 @@ def build_alphavantage_stats(company_name: str, ticker_str: str, overview: dict)
 
 
 def build_finnhub_stats(company_name: str, ticker_str: str, profile: dict, quote: dict) -> dict:
+    market_cap_millions = _to_float(profile.get("marketCapitalization"))
+    market_cap = market_cap_millions * 1_000_000 if market_cap_millions is not None else "Data Not Available"
+
     return {
         "symbol": ticker_str,
         "companyName": profile.get("name", company_name),
         "currency": profile.get("currency", "USD"),
         "currentPrice": quote.get("c") or "Data Not Available",
-        "marketCap": profile.get("marketCapitalization", "Data Not Available"),
+        "marketCap": market_cap,
         "revenue": "Data Not Available",
         "revenueGrowth": "Data Not Available",
         "sector": profile.get("finnhubIndustry", "Data Not Available"),
-        "industry": profile.get("finnhubIndustry", "Data Not Available"),
+        "industry": "Data Not Available",
         "ebitda": "Data Not Available",
         "debtToEquity": "Data Not Available",
     }
