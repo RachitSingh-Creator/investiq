@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+langchain>=0.2.14,<0.3.0
+langchain-aws
+langchain-google-genai
+boto3
+langchain-community>=0.2.14,<0.3.0
+yfinance
+feedparser
+pypdf
+faiss-cpu
+sentence-transformers
+python-dotenv
+mangum
+python-multipart

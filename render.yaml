@@ -1,0 +1,60 @@
+services:
+  - type: web
+    name: investiq-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /docs
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: MODEL_PROVIDER
+        value: gemini
+      - key: MODEL_TEMPERATURE
+        value: "0.0"
+      - key: MODEL_MAX_TOKENS
+        value: "1024"
+      - key: REQUEST_TIMEOUT
+        value: "12"
+      - key: MAX_RETRIES
+        value: "3"
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "5"
+      - key: FALLBACK_MODE
+        value: graceful
+      - key: RESPONSE_MODE
+        value: structured
+      - key: NEWS_SOURCE
+        value: newsapi
+      - key: NEWS_FETCH_LIMIT
+        value: "5"
+      - key: NEWS_LANGUAGE
+        value: en
+      - key: NEWS_SORT_BY
+        value: publishedAt
+      - key: VECTOR_DB_TYPE
+        value: faiss
+      - key: EMBEDDING_MODEL
+        value: all-MiniLM-L6-v2
+      - key: CHUNK_SIZE
+        value: "500"
+      - key: CHUNK_OVERLAP
+        value: "50"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: NEWSAPI_KEY
+        sync: false
+
+  - type: web
+    name: investiq-frontend
+    runtime: static
+    rootDir: ./frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
