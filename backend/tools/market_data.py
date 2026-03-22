@@ -4,6 +4,7 @@ import requests
 from langchain.tools import tool
 from tools.ticker_resolver import get_ticker
 from functools import lru_cache
+from utils.config import settings
 from utils.safe_execution import safe_execute_sync
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,19 @@ def _empty_market_stats(company_name: str, ticker_str: str) -> dict:
         "ebitda": "Data Not Available",
         "debtToEquity": "Data Not Available",
     }
+
+
+def is_missing(value) -> bool:
+    return value in (None, "", "Data Not Available", "N/A")
+
+
+def merge_market_stats(base: dict, overlay: dict) -> dict:
+    merged = dict(base)
+    for key, value in overlay.items():
+        if key not in merged or is_missing(merged.get(key)):
+            if not is_missing(value):
+                merged[key] = value
+    return merged
 
 
 @lru_cache(maxsize=128)
@@ -66,6 +80,86 @@ def extract_chart_price(chart_payload: dict):
             return valid_closes[-1]
 
     return "Data Not Available"
+
+
+@lru_cache(maxsize=128)
+def fetch_alphavantage_overview(ticker_str: str) -> dict:
+    if not settings.alphavantage_api_key:
+        return {}
+
+    url = (
+        "https://www.alphavantage.co/query"
+        f"?function=OVERVIEW&symbol={ticker_str}&apikey={settings.alphavantage_api_key}"
+    )
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+@lru_cache(maxsize=128)
+def fetch_finnhub_profile(ticker_str: str) -> dict:
+    if not settings.finnhub_api_key:
+        return {}
+
+    url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker_str}&token={settings.finnhub_api_key}"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+@lru_cache(maxsize=128)
+def fetch_finnhub_quote(ticker_str: str) -> dict:
+    if not settings.finnhub_api_key:
+        return {}
+
+    url = f"https://finnhub.io/api/v1/quote?symbol={ticker_str}&token={settings.finnhub_api_key}"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+def _to_float(value):
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_alphavantage_stats(company_name: str, ticker_str: str, overview: dict) -> dict:
+    return {
+        "symbol": ticker_str,
+        "companyName": overview.get("Name", company_name),
+        "currency": overview.get("Currency", "USD"),
+        "currentPrice": "Data Not Available",
+        "marketCap": _to_float(overview.get("MarketCapitalization")) or "Data Not Available",
+        "revenue": _to_float(overview.get("RevenueTTM")) or "Data Not Available",
+        "revenueGrowth": _to_float(overview.get("QuarterlyRevenueGrowthYOY")) or "Data Not Available",
+        "sector": overview.get("Sector", "Data Not Available"),
+        "industry": overview.get("Industry", "Data Not Available"),
+        "ebitda": _to_float(overview.get("EBITDA")) or "Data Not Available",
+        "debtToEquity": _to_float(overview.get("DebtToEquity")) or "Data Not Available",
+    }
+
+
+def build_finnhub_stats(company_name: str, ticker_str: str, profile: dict, quote: dict) -> dict:
+    return {
+        "symbol": ticker_str,
+        "companyName": profile.get("name", company_name),
+        "currency": profile.get("currency", "USD"),
+        "currentPrice": quote.get("c") or "Data Not Available",
+        "marketCap": profile.get("marketCapitalization", "Data Not Available"),
+        "revenue": "Data Not Available",
+        "revenueGrowth": "Data Not Available",
+        "sector": profile.get("finnhubIndustry", "Data Not Available"),
+        "industry": profile.get("finnhubIndustry", "Data Not Available"),
+        "ebitda": "Data Not Available",
+        "debtToEquity": "Data Not Available",
+    }
 
 
 def build_market_stats(company_name: str, ticker_str: str, summary_payload: dict, chart_payload: dict) -> dict:
@@ -121,6 +215,28 @@ def fetch_market_logic(company_name: str) -> str:
             logger.warning("Chart request failed for %s (%s): %s", company_name, ticker_str, exc)
 
         market_stats = build_market_stats(company_name, ticker_str, summary_payload, chart_payload)
+
+        try:
+            av_overview = fetch_alphavantage_overview(ticker_str)
+            if av_overview and "Note" not in av_overview and "Information" not in av_overview:
+                market_stats = merge_market_stats(
+                    market_stats,
+                    build_alphavantage_stats(company_name, ticker_str, av_overview),
+                )
+        except requests.RequestException as exc:
+            logger.warning("Alpha Vantage request failed for %s (%s): %s", company_name, ticker_str, exc)
+
+        try:
+            finnhub_profile = fetch_finnhub_profile(ticker_str)
+            finnhub_quote = fetch_finnhub_quote(ticker_str)
+            if finnhub_profile or finnhub_quote:
+                market_stats = merge_market_stats(
+                    market_stats,
+                    build_finnhub_stats(company_name, ticker_str, finnhub_profile, finnhub_quote),
+                )
+        except requests.RequestException as exc:
+            logger.warning("Finnhub request failed for %s (%s): %s", company_name, ticker_str, exc)
+
         return json.dumps(market_stats)
         
     except Exception as e:

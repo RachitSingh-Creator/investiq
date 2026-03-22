@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     news_fetch_limit: int = Field(default=5)
     news_language: str = Field(default="en")
     news_sort_by: str = Field(default="publishedAt")
+
+    # Market Data Fallback APIs
+    alphavantage_api_key: str = Field(default="")
+    finnhub_api_key: str = Field(default="")
     
     # Vector DB Config
     vector_db_type: str = Field(default="faiss")
