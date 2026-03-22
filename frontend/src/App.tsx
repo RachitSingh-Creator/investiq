@@ -115,9 +115,6 @@ const formatMetricValue = (key: string, value: MarketValue, currencyCode?: strin
   return String(value)
 }
 
-const isMetricUnavailable = (value: MarketValue) =>
-  value === null || value === undefined || value === '' || value === 'Data Not Available'
-
 function App() {
   const [query, setQuery] = useState('');
   const [files, setFiles] = useState<File[]>([]);
