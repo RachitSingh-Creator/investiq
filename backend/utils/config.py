@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     news_fetch_limit: int = Field(default=5)
     news_language: str = Field(default="en")
     news_sort_by: str = Field(default="publishedAt")
+    reddit_enabled: bool = Field(default=True)
+    reddit_post_limit: int = Field(default=3)
+    reddit_sort: str = Field(default="relevance")
 
     # Market Data Fallback APIs
     alphavantage_api_key: str = Field(default="")
