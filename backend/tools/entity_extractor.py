@@ -69,6 +69,9 @@ def clean_company_candidate(candidate: str) -> str | None:
     lowered = cleaned.lower()
     if lowered in KNOWN_COMPANIES:
         return KNOWN_COMPANIES[lowered]
+    for alias, company in sorted(KNOWN_COMPANIES.items(), key=lambda item: len(item[0]), reverse=True):
+        if lowered == f"{alias}and" or lowered == f"{alias}or":
+            return company
     if lowered in GENERIC_PHRASES or lowered in GENERIC_SINGLE_WORDS:
         return None
     if cleaned.isdigit():
@@ -114,7 +117,7 @@ def heuristic_extract_companies(query: str) -> list[str]:
     matches: list[str] = []
 
     for alias, company in KNOWN_COMPANIES.items():
-        if alias in normalized and company not in matches:
+        if re.search(rf"\b{re.escape(alias)}\b", normalized) and company not in matches:
             matches.append(company)
 
     capitalized_phrases = re.findall(r"\b(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", query)

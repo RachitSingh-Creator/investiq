@@ -184,6 +184,30 @@ def _extract_finnhub_metric(metric_payload: dict, keys: list[str]):
     return None
 
 
+def _normalize_percentage_metric(value: float | None) -> float | None:
+    if value is None:
+        return None
+    if abs(value) > 3:
+        return value / 100
+    return value
+
+
+def _extract_finnhub_share_outstanding(profile: dict, metric_payload: dict) -> float | None:
+    profile_outstanding = _to_float(profile.get("shareOutstanding")) if isinstance(profile, dict) else None
+    if profile_outstanding is not None:
+        return profile_outstanding * 1_000_000
+
+    metric = metric_payload.get("metric", {}) if isinstance(metric_payload, dict) else {}
+    if not isinstance(metric, dict):
+        return None
+
+    metric_outstanding = _to_float(metric.get("shareOutstanding"))
+    if metric_outstanding is not None:
+        return metric_outstanding * 1_000_000
+
+    return None
+
+
 def _extract_finnhub_revenue(financials_payload: dict) -> float | None:
     data = financials_payload.get("financials") if isinstance(financials_payload, dict) else None
     if not isinstance(data, list):
@@ -207,31 +231,51 @@ def _extract_finnhub_revenue(financials_payload: dict) -> float | None:
     return None
 
 
-def build_finnhub_fundamental_stats(company_name: str, ticker_str: str, basic_financials: dict, financials: dict) -> dict:
+def _estimate_revenue_from_per_share(profile: dict, basic_financials: dict) -> float | None:
+    shares_outstanding = _extract_finnhub_share_outstanding(profile, basic_financials)
+    if shares_outstanding is None:
+        return None
+
+    sales_per_share = _extract_finnhub_metric(
+        basic_financials,
+        [
+            "salesPerShareTTM",
+            "revenuePerShareTTM",
+        ],
+    )
+    if sales_per_share is None:
+        return None
+
+    return sales_per_share * shares_outstanding
+
+
+def build_finnhub_fundamental_stats(company_name: str, ticker_str: str, profile: dict, basic_financials: dict, financials: dict) -> dict:
+    revenue = _extract_finnhub_revenue(financials)
+    if revenue is None:
+        revenue = _estimate_revenue_from_per_share(profile, basic_financials)
+
+    revenue_growth = _normalize_percentage_metric(
+        _extract_finnhub_metric(
+            basic_financials,
+            [
+                "revenueGrowthAnnual5Y",
+                "revenueGrowthTTMYoy",
+                "revenueGrowthQuarterlyYoy",
+            ],
+        )
+    )
+
     return {
         "symbol": ticker_str,
         "companyName": company_name,
         "currency": "USD",
         "currentPrice": "Data Not Available",
         "marketCap": "Data Not Available",
-        "revenue": _extract_finnhub_revenue(financials) or "Data Not Available",
-        "revenueGrowth": _extract_finnhub_metric(
-            basic_financials,
-            [
-                "revenueGrowthTTMYoy",
-                "revenueGrowthQuarterlyYoy",
-                "revenueGrowthAnnual5Y",
-            ],
-        ) or "Data Not Available",
+        "revenue": revenue or "Data Not Available",
+        "revenueGrowth": revenue_growth if revenue_growth is not None else "Data Not Available",
         "sector": "Data Not Available",
         "industry": "Data Not Available",
-        "ebitda": _extract_finnhub_metric(
-            basic_financials,
-            [
-                "ebitda",
-                "ebitdPerShareTTM",
-            ],
-        ) or "Data Not Available",
+        "ebitda": "Data Not Available",
         "debtToEquity": _extract_finnhub_metric(
             basic_financials,
             [
@@ -310,6 +354,8 @@ def fetch_market_logic(company_name: str) -> str:
         )
         if finnhub_missing and settings.finnhub_api_key:
             finnhub_filled_fields: list[str] = []
+            finnhub_profile = {}
+            finnhub_quote = {}
 
             try:
                 finnhub_profile = fetch_finnhub_profile(ticker_str)
@@ -353,6 +399,7 @@ def fetch_market_logic(company_name: str) -> str:
                     finnhub_fundamental_stats = build_finnhub_fundamental_stats(
                         company_name,
                         ticker_str,
+                        finnhub_profile,
                         basic_financials,
                         financials,
                     )
