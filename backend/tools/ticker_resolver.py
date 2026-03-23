@@ -22,6 +22,7 @@ def _score_quote(company_name: str, quote: dict) -> float:
     score = 0.0
     normalized_query = _normalize_text(company_name)
     query_tokens = set(_tokenize(company_name))
+    query_is_symbol_like = bool(re.fullmatch(r"[A-Z0-9.-]{2,10}", company_name.strip()))
 
     symbol = str(quote.get("symbol", "")).strip()
     short_name = str(quote.get("shortname") or quote.get("shortName") or "")
@@ -30,6 +31,7 @@ def _score_quote(company_name: str, quote: dict) -> float:
     quote_type = str(quote.get("quoteType") or "")
 
     normalized_symbol = _normalize_text(symbol)
+    base_symbol = symbol.split(".")[0].lower()
     normalized_short = _normalize_text(short_name)
     normalized_long = _normalize_text(long_name)
     name_text = f"{normalized_short} {normalized_long}".strip()
@@ -40,6 +42,8 @@ def _score_quote(company_name: str, quote: dict) -> float:
 
     if normalized_symbol == normalized_query:
         score += 100
+    elif base_symbol == normalized_query:
+        score += 80
     elif symbol.lower().startswith(normalized_query):
         score += 35
 
@@ -59,8 +63,26 @@ def _score_quote(company_name: str, quote: dict) -> float:
     if query_tokens and query_tokens <= name_tokens:
         score += 25
 
-    if "." in symbol:
-        score += 5
+    if "." not in symbol:
+        score += 8
+    elif not query_is_symbol_like and "." in symbol:
+        score -= 12
+
+    if query_is_symbol_like and base_symbol == company_name.strip().lower():
+        score += 35
+
+    region_markers = {
+        "india": ["nse", "bse", ".ns", ".bo"],
+        "japan": ["tyo", ".t"],
+        "germany": ["ger", "xetra", "fra", ".de"],
+        "europe": ["epa", "ams", "bru", "mil", "lis", ".de", ".as", ".pa", ".mi"],
+        "uk": ["lon", ".l"],
+        "us": ["nasdaq", "nyse", "nms"],
+    }
+    lowered_query = company_name.lower()
+    for region, markers in region_markers.items():
+        if region in lowered_query and any(marker in symbol.lower() or marker in exchange.lower() for marker in markers):
+            score += 20
 
     preferred_exchange_markers = {"nasdaq", "nyse", "nse", "bse", "etra", "xetra", "tse", "tyo", "lon", "ams", "epa"}
     if any(marker in exchange.lower() for marker in preferred_exchange_markers):

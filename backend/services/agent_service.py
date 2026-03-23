@@ -57,7 +57,7 @@ class AgentService:
         if not parts:
             return f"{company}'s competitive position depends on product execution, pricing discipline, and its ability to defend demand in its end markets."
 
-        return " ".join(parts).strip()
+        return " ".join(parts).strip().rstrip(".") + "."
 
     def _build_risk_hint(self, company: str, market_snapshot: Dict[str, Any], news_snapshot: Dict[str, Any]) -> str | None:
         sector = market_snapshot.get("sector")
@@ -79,7 +79,7 @@ class AgentService:
         if articles:
             parts.append("headline-driven sentiment adds volatility, especially when the fundamental picture is incomplete")
 
-        return " ".join(parts).strip() if parts else None
+        return (" ".join(parts).strip().rstrip(".") + ".") if parts else None
         
     def _validate_data(self, parsed: AnalysisOutput) -> AnalysisOutput:
         """Data Validation Layer preventing critical empty logic structure cleanly matching fallbacks."""
@@ -374,14 +374,17 @@ class AgentService:
                 reason_parts.append("recent news tone is neutral")
 
             positioning_hint = self._build_positioning_hint(company, market_snapshot, news_snapshot)
-            if positioning_hint:
-                reason_parts.append(positioning_hint)
+            qualitative_note = positioning_hint if positioning_hint else ""
 
-            recommendations.append(
+            reason_text = ", and ".join(reason_parts) + "."
+            recommendation = (
                 f"- {company}: Current view is {stance}. "
                 f"Price is {price}. "
-                f"Reason: " + ", and ".join(reason_parts) + "."
+                f"Reason: {reason_text}"
             )
+            if qualitative_note:
+                recommendation += f" {qualitative_note}"
+            recommendations.append(recommendation)
 
         if document_insights != "No documents were provided.":
             recommendations.append("- Note: Uploaded documents should be reviewed before making a decision because they may change the conclusion.")
