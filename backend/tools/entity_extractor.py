@@ -53,6 +53,12 @@ GENERIC_SINGLE_WORDS = {
     "outlook", "sentiment", "with", "and", "or", "the", "for", "about", "from",
     "using", "give", "provide", "review", "evaluate", "assess", "check",
 }
+COMPANY_SUFFIX_WORDS = {
+    "inc", "corp", "corporation", "company", "co", "limited", "ltd", "plc", "ag", "se",
+    "sa", "nv", "holdings", "group", "industries", "systems", "motors", "bank", "pharma",
+    "software", "technologies", "technology", "telecom", "energy", "airways", "consultancy",
+    "services",
+}
 
 
 def normalize_company_candidate(candidate: str) -> str:
@@ -89,6 +95,14 @@ def clean_company_candidate(candidate: str) -> str | None:
         return None
     if len(words) == 1 and lowered_words[0] in GENERIC_SINGLE_WORDS:
         return None
+    if len(words) == 1 and cleaned.isupper() and 2 <= len(cleaned) <= 6:
+        return cleaned
+    if len(words) == 1 and len(cleaned) <= 2:
+        return None
+    if len(words) > 1:
+        has_company_shape = any(word in COMPANY_SUFFIX_WORDS for word in lowered_words[1:]) or words[0][0].isupper()
+        if not has_company_shape:
+            return None
 
     return cleaned
 
@@ -152,8 +166,8 @@ def heuristic_extract_companies(query: str) -> list[str]:
 
     uppercase_tickers = re.findall(r"\b[A-Z]{2,5}\b", query)
     for ticker in uppercase_tickers:
-        company = KNOWN_COMPANIES.get(ticker.lower())
-        if company and company not in matches:
+        company = KNOWN_COMPANIES.get(ticker.lower(), ticker)
+        if company not in matches and ticker.lower() not in GENERIC_SINGLE_WORDS:
             matches.append(company)
 
     return dedupe_companies(matches)
