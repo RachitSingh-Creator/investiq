@@ -48,6 +48,11 @@ async def log_requests(request: Request, call_next):
     logger.info(f"Path: {request.url.path} Method: {request.method} Status: {response.status_code} Time: {process_time:.2f}s")
     return response
 
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
 @app.post("/analyze", response_model=AnalyzeResponse, dependencies=[Depends(check_rate_limit)])
 async def analyze_query(
     query: str = Form(...),
