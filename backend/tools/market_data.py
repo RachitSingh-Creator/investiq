@@ -464,6 +464,12 @@ def _extract_latest_statement_entries(financials_payload: dict, statement_key: s
 
     statement = financials.get(statement_key)
     if not isinstance(statement, dict):
+        lowered_key = statement_key.lower()
+        for key, value in financials.items():
+            if str(key).lower() == lowered_key and isinstance(value, dict):
+                statement = value
+                break
+    if not isinstance(statement, dict):
         return []
 
     entries: list[dict] = []
@@ -481,25 +487,49 @@ def _extract_latest_statement_entries(financials_payload: dict, statement_key: s
     return entries
 
 
+def _extract_dict_value_case_insensitive(payload: dict, keys: list[str]):
+    if not isinstance(payload, dict):
+        return None
+
+    lowered_lookup = {str(key).lower(): value for key, value in payload.items()}
+    for key in keys:
+        if key.lower() in lowered_lookup:
+            return lowered_lookup[key.lower()]
+
+    return None
+
+
+def _extract_numeric_from_dict(payload: dict, keys: list[str]) -> float | None:
+    value = _extract_dict_value_case_insensitive(payload, keys)
+    return _to_float(value)
+
+
+def _extract_text_from_dict(payload: dict, keys: list[str]) -> str | None:
+    value = _extract_dict_value_case_insensitive(payload, keys)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def _extract_eodhd_revenue(fundamentals_payload: dict) -> float | None:
     highlights = fundamentals_payload.get("Highlights") if isinstance(fundamentals_payload, dict) else {}
     if isinstance(highlights, dict):
-        for key in ("RevenueTTM", "Revenue"):
-            value = _to_float(highlights.get(key))
-            if value is not None:
-                return value
+        value = _extract_numeric_from_dict(highlights, ["RevenueTTM", "Revenue", "RevenuePerShareTTM"])
+        if value is not None:
+            return value
 
     revenue_keys = [
         "totalRevenue",
         "Revenue",
         "revenue",
         "sales",
+        "total_revenue",
+        "operatingRevenue",
     ]
     for entry in _extract_latest_statement_entries(fundamentals_payload, "Income_Statement"):
-        for key in revenue_keys:
-            value = _to_float(entry.get(key))
-            if value is not None:
-                return value
+        value = _extract_numeric_from_dict(entry, revenue_keys)
+        if value is not None:
+            return value
 
     return None
 
@@ -507,19 +537,29 @@ def _extract_eodhd_revenue(fundamentals_payload: dict) -> float | None:
 def _extract_eodhd_revenue_growth(fundamentals_payload: dict) -> float | None:
     growth = fundamentals_payload.get("Growth") if isinstance(fundamentals_payload, dict) else {}
     if isinstance(growth, dict):
-        for key in ("RevenueGrowthYOY", "QuarterlyRevenueGrowthYOY", "RevenueGrowthQuarterlyYoy"):
-            value = _extract_percentage(growth.get(key))
-            if value is not None:
-                return value
+        value = _extract_percentage(
+            _extract_dict_value_case_insensitive(
+                growth,
+                [
+                    "RevenueGrowthYOY",
+                    "QuarterlyRevenueGrowthYOY",
+                    "RevenueGrowthQuarterlyYoy",
+                    "QuarterlyRevenueGrowth",
+                ],
+            )
+        )
+        if value is not None:
+            return value
 
     entries = _extract_latest_statement_entries(fundamentals_payload, "Income_Statement")
     revenues: list[float] = []
     for entry in entries:
-        for key in ("totalRevenue", "Revenue", "revenue", "sales"):
-            value = _to_float(entry.get(key))
-            if value is not None:
-                revenues.append(value)
-                break
+        value = _extract_numeric_from_dict(
+            entry,
+            ["totalRevenue", "Revenue", "revenue", "sales", "total_revenue", "operatingRevenue"],
+        )
+        if value is not None:
+            revenues.append(value)
         if len(revenues) >= 2:
             break
 
@@ -530,20 +570,43 @@ def _extract_eodhd_revenue_growth(fundamentals_payload: dict) -> float | None:
 
 
 def _extract_eodhd_debt_to_equity(fundamentals_payload: dict) -> float | None:
+    highlights = fundamentals_payload.get("Highlights") if isinstance(fundamentals_payload, dict) else {}
+    if isinstance(highlights, dict):
+        value = _extract_percentage(
+            _extract_dict_value_case_insensitive(
+                highlights,
+                ["DebtToEquity", "DebtToEquityMRQ", "Debt/Equity", "TotalDebtToEquity"],
+            )
+        )
+        if value is not None:
+            return value
+
     balance_entries = _extract_latest_statement_entries(fundamentals_payload, "Balance_Sheet")
     for entry in balance_entries:
         debt = None
         equity = None
 
-        for debt_key in ("totalDebt", "shortLongTermDebtTotal", "longTermDebt", "totalLiab"):
-            debt = _to_float(entry.get(debt_key))
-            if debt is not None:
-                break
+        debt = _extract_numeric_from_dict(
+            entry,
+            [
+                "totalDebt",
+                "shortLongTermDebtTotal",
+                "longTermDebt",
+                "netDebt",
+                "LongTermDebtAndCapitalLeaseObligation",
+            ],
+        )
 
-        for equity_key in ("totalStockholderEquity", "totalEquity", "commonStockEquity"):
-            equity = _to_float(entry.get(equity_key))
-            if equity is not None:
-                break
+        equity = _extract_numeric_from_dict(
+            entry,
+            [
+                "totalStockholderEquity",
+                "totalEquity",
+                "commonStockEquity",
+                "StockholdersEquity",
+                "TotalEquityGrossMinorityInterest",
+            ],
+        )
 
         if debt is not None and equity not in (None, 0):
             return debt / equity
@@ -563,18 +626,25 @@ def build_eodhd_fundamental_stats(company_name: str, ticker_str: str, fundamenta
     revenue = _extract_eodhd_revenue(fundamentals_payload)
     revenue_growth = _extract_eodhd_revenue_growth(fundamentals_payload)
     debt_to_equity = _extract_eodhd_debt_to_equity(fundamentals_payload)
+    market_cap = _extract_numeric_from_dict(highlights, ["MarketCapitalization", "MarketCapitalizationMln"])
+    ebitda = _extract_numeric_from_dict(highlights, ["EBITDA", "Ebitda", "EBITDATTM"])
+    sector = _extract_text_from_dict(general, ["Sector", "GicSector", "SectorName"])
+    industry = _extract_text_from_dict(general, ["Industry", "GicGroup", "GicIndustry", "IndustryTitle"])
+    market_cap_mln = _extract_numeric_from_dict(highlights, ["MarketCapitalizationMln"])
+    if market_cap_mln is not None:
+        market_cap = market_cap_mln * 1_000_000
 
     return {
         "symbol": ticker_str,
-        "companyName": general.get("Name", company_name),
-        "currency": general.get("CurrencyCode") or infer_currency_from_symbol(ticker_str),
+        "companyName": _extract_text_from_dict(general, ["Name", "Code", "ShortName"]) or company_name,
+        "currency": _extract_text_from_dict(general, ["CurrencyCode", "CurrencyName"]) or infer_currency_from_symbol(ticker_str),
         "currentPrice": "Data Not Available",
-        "marketCap": _to_float(highlights.get("MarketCapitalization")) or "Data Not Available",
+        "marketCap": market_cap or "Data Not Available",
         "revenue": revenue or "Data Not Available",
         "revenueGrowth": revenue_growth if revenue_growth is not None else "Data Not Available",
-        "sector": general.get("Sector", "Data Not Available"),
-        "industry": general.get("Industry", "Data Not Available"),
-        "ebitda": _to_float(highlights.get("EBITDA")) or "Data Not Available",
+        "sector": sector or "Data Not Available",
+        "industry": industry or "Data Not Available",
+        "ebitda": ebitda or "Data Not Available",
         "debtToEquity": debt_to_equity if debt_to_equity is not None else "Data Not Available",
     }
 
@@ -821,33 +891,11 @@ def fetch_market_logic(company_name: str) -> str:
         chart_payload = {}
         quote_payload = {}
         finnhub_filled_fields: list[str] = []
-
-        try:
-            summary_payload = fetch_quote_summary_data(ticker_str)
-        except requests.RequestException as exc:
-            logger.warning("Quote summary request failed for %s (%s): %s", company_name, ticker_str, exc)
-
-        try:
-            chart_payload = fetch_chart_data(ticker_str)
-        except requests.RequestException as exc:
-            logger.warning("Chart request failed for %s (%s): %s", company_name, ticker_str, exc)
-
-        try:
-            quote_payload = fetch_quote_data(ticker_str)
-        except requests.RequestException as exc:
-            logger.warning("Quote request failed for %s (%s): %s", company_name, ticker_str, exc)
-
-        market_stats = build_market_stats(company_name, ticker_str, summary_payload, chart_payload, quote_payload)
         provider_fields: dict[str, list[str]] = {}
-
-        yahoo_fields = [
-            key for key, value in market_stats.items()
-            if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
-        ]
-        if yahoo_fields:
-            provider_fields["yahoo"] = yahoo_fields
-
         eodhd_filled_fields: list[str] = []
+
+        market_stats = _empty_market_stats(company_name, ticker_str)
+
         if settings.eodhd_api_key and is_indian_equity(ticker_str):
             eodhd_symbol, eodhd_payload = fetch_eodhd_fundamentals(ticker_str)
             if eodhd_payload:
@@ -859,6 +907,31 @@ def fetch_market_logic(company_name: str) -> str:
                 market_stats = merge_market_stats(market_stats, eodhd_stats)
                 if eodhd_filled_fields:
                     provider_fields["eodhd"] = eodhd_filled_fields + ([f"symbol:{eodhd_symbol}"] if eodhd_symbol else [])
+
+        try:
+            quote_payload = fetch_quote_data(ticker_str)
+        except requests.RequestException as exc:
+            logger.warning("Quote request failed for %s (%s): %s", company_name, ticker_str, exc)
+
+        try:
+            chart_payload = fetch_chart_data(ticker_str)
+        except requests.RequestException as exc:
+            logger.warning("Chart request failed for %s (%s): %s", company_name, ticker_str, exc)
+
+        try:
+            summary_payload = fetch_quote_summary_data(ticker_str)
+        except requests.RequestException as exc:
+            logger.warning("Quote summary request failed for %s (%s): %s", company_name, ticker_str, exc)
+
+        yahoo_stats = build_market_stats(company_name, ticker_str, summary_payload, chart_payload, quote_payload)
+        market_stats = merge_market_stats(market_stats, yahoo_stats)
+
+        yahoo_fields = [
+            key for key, value in yahoo_stats.items()
+            if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+        ]
+        if yahoo_fields:
+            provider_fields["yahoo"] = yahoo_fields
 
         finnhub_missing = missing_fields(
             market_stats,
