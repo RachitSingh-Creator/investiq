@@ -129,6 +129,30 @@ def fetch_finnhub_profile(ticker_str: str) -> dict:
 
 
 @lru_cache(maxsize=128)
+def fetch_finnhub_basic_financials(ticker_str: str) -> dict:
+    if not settings.finnhub_api_key:
+        return {}
+
+    url = f"https://finnhub.io/api/v1/stock/metric?symbol={ticker_str}&metric=all&token={settings.finnhub_api_key}"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+@lru_cache(maxsize=128)
+def fetch_finnhub_financials(ticker_str: str) -> dict:
+    if not settings.finnhub_api_key:
+        return {}
+
+    url = f"https://finnhub.io/api/v1/stock/financials?symbol={ticker_str}&statement=ic&freq=annual&token={settings.finnhub_api_key}"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+@lru_cache(maxsize=128)
 def fetch_finnhub_quote(ticker_str: str) -> dict:
     if not settings.finnhub_api_key:
         return {}
@@ -153,6 +177,15 @@ def _alphavantage_notice(payload: dict) -> str | None:
     if not isinstance(payload, dict):
         return None
     return payload.get("Note") or payload.get("Information") or payload.get("Error Message")
+
+
+def _finnhub_notice(payload: dict) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, str) and error.strip():
+        return error
+    return None
 
 
 def _compute_revenue_growth_from_quarters(quarterly_reports) -> float | None:
@@ -223,6 +256,77 @@ def build_finnhub_stats(company_name: str, ticker_str: str, profile: dict, quote
         "industry": "Data Not Available",
         "ebitda": "Data Not Available",
         "debtToEquity": "Data Not Available",
+    }
+
+
+def _extract_finnhub_metric(metric_payload: dict, keys: list[str]):
+    metric = metric_payload.get("metric", {}) if isinstance(metric_payload, dict) else {}
+    if not isinstance(metric, dict):
+        return None
+
+    for key in keys:
+        value = _to_float(metric.get(key))
+        if value is not None:
+            return value
+
+    return None
+
+
+def _extract_finnhub_revenue(financials_payload: dict) -> float | None:
+    data = financials_payload.get("financials") if isinstance(financials_payload, dict) else None
+    if not isinstance(data, list):
+        return None
+
+    revenue_keys = [
+        "revenue",
+        "totalRevenue",
+        "revenueFromContractWithCustomerExcludingAssessedTax",
+        "salesRevenueNet",
+    ]
+
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        for key in revenue_keys:
+            value = _to_float(entry.get(key))
+            if value is not None:
+                return value
+
+    return None
+
+
+def build_finnhub_fundamental_stats(company_name: str, ticker_str: str, basic_financials: dict, financials: dict) -> dict:
+    return {
+        "symbol": ticker_str,
+        "companyName": company_name,
+        "currency": "USD",
+        "currentPrice": "Data Not Available",
+        "marketCap": "Data Not Available",
+        "revenue": _extract_finnhub_revenue(financials) or "Data Not Available",
+        "revenueGrowth": _extract_finnhub_metric(
+            basic_financials,
+            [
+                "revenueGrowthTTMYoy",
+                "revenueGrowthQuarterlyYoy",
+                "revenueGrowthAnnual5Y",
+            ],
+        ) or "Data Not Available",
+        "sector": "Data Not Available",
+        "industry": "Data Not Available",
+        "ebitda": _extract_finnhub_metric(
+            basic_financials,
+            [
+                "ebitda",
+                "ebitdPerShareTTM",
+            ],
+        ) or "Data Not Available",
+        "debtToEquity": _extract_finnhub_metric(
+            basic_financials,
+            [
+                "totalDebt/totalEquityQuarterly",
+                "totalDebt/totalEquityAnnual",
+            ],
+        ) or "Data Not Available",
     }
 
 
@@ -335,23 +439,56 @@ def fetch_market_logic(company_name: str) -> str:
             except requests.RequestException as exc:
                 logger.warning("Alpha Vantage income statement request failed for %s (%s): %s", company_name, ticker_str, exc)
 
-        finnhub_missing = missing_fields(market_stats, ["currentPrice", "marketCap", "sector"])
+        finnhub_missing = missing_fields(
+            market_stats,
+            ["currentPrice", "marketCap", "sector", "revenue", "revenueGrowth", "ebitda", "debtToEquity"],
+        )
         if finnhub_missing and settings.finnhub_api_key:
             try:
                 finnhub_profile = fetch_finnhub_profile(ticker_str)
                 finnhub_quote = fetch_finnhub_quote(ticker_str)
+                finnhub_stats = {}
+                finnhub_filled_fields: list[str] = []
+
                 if finnhub_profile or finnhub_quote:
                     finnhub_stats = build_finnhub_stats(company_name, ticker_str, finnhub_profile, finnhub_quote)
-                    filled_fields = [
+                    finnhub_filled_fields.extend(
                         key for key, value in finnhub_stats.items()
                         if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
-                    ]
-                    if filled_fields:
-                        provider_fields["finnhub"] = filled_fields
+                    )
                     market_stats = merge_market_stats(
                         market_stats,
                         finnhub_stats,
                     )
+
+                finnhub_fundamentals_missing = missing_fields(
+                    market_stats,
+                    ["revenue", "revenueGrowth", "ebitda", "debtToEquity"],
+                )
+                if finnhub_fundamentals_missing:
+                    basic_financials = fetch_finnhub_basic_financials(ticker_str)
+                    financials = fetch_finnhub_financials(ticker_str)
+                    finnhub_notice = _finnhub_notice(basic_financials) or _finnhub_notice(financials)
+                    if finnhub_notice:
+                        logger.info("Finnhub fundamentals notice for %s (%s): %s", company_name, ticker_str, finnhub_notice)
+                    else:
+                        finnhub_fundamental_stats = build_finnhub_fundamental_stats(
+                            company_name,
+                            ticker_str,
+                            basic_financials,
+                            financials,
+                        )
+                        finnhub_filled_fields.extend(
+                            key for key, value in finnhub_fundamental_stats.items()
+                            if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+                        )
+                        market_stats = merge_market_stats(
+                            market_stats,
+                            finnhub_fundamental_stats,
+                        )
+
+                if finnhub_filled_fields:
+                    provider_fields["finnhub"] = sorted(set(finnhub_filled_fields))
             except requests.RequestException as exc:
                 logger.warning("Finnhub request failed for %s (%s): %s", company_name, ticker_str, exc)
 
