@@ -13,6 +13,53 @@ logger = logging.getLogger(__name__)
 REDDIT_HEADERS = {
     "User-Agent": "InvestIQAI/1.0 (news sentiment aggregator)"
 }
+COMPANY_NEWS_ALIASES = {
+    "Apple": ["apple", "aapl", "iphone", "ipad", "mac"],
+    "Microsoft": ["microsoft", "msft", "azure", "windows", "copilot"],
+    "Alphabet": ["alphabet", "google", "goog", "googl", "youtube", "verily", "waymo"],
+    "Amazon": ["amazon", "amzn", "aws", "prime"],
+    "Meta": ["meta", "meta platforms", "facebook", "instagram", "whatsapp"],
+    "Tesla": ["tesla", "tsla", "model 3", "model y", "semi"],
+    "NVIDIA": ["nvidia", "nvda", "geforce", "cuda", "h100", "blackwell"],
+}
+NOISY_NEWS_TERMS = {
+    "pypi", "npm", "crate", "package", "library", "sdk", "plugin", "extension",
+    "release", "version", "changelog", "github", "gitlab", "docker image",
+}
+FINANCE_CONTEXT_TERMS = {
+    "stock", "shares", "earnings", "revenue", "profit", "guidance", "analyst",
+    "market", "valuation", "investor", "demand", "sales", "margin", "quarter",
+    "fiscal", "forecast", "buyback", "chip", "iphone", "ai", "cloud",
+}
+FINANCE_SUBREDDITS = {
+    "r/stocks", "r/investing", "r/wallstreetbets", "r/securityanalysis", "r/options",
+    "r/valueinvesting", "r/economy", "r/technology", "r/apple", "r/nvidia",
+    "r/teslainvestorsclub", "r/microsoft", "r/amazon", "r/google", "r/meta",
+}
+
+
+def build_company_search_terms(company_name: str) -> list[str]:
+    base_terms = COMPANY_NEWS_ALIASES.get(company_name, [])
+    generic_terms = [company_name.lower()]
+
+    cleaned = re.sub(r"[^a-zA-Z0-9\s&.-]", " ", company_name).strip().lower()
+    if cleaned and cleaned not in generic_terms:
+        generic_terms.append(cleaned)
+
+    normalized_words = [word for word in re.split(r"\s+", cleaned) if len(word) > 2]
+    if len(normalized_words) > 1:
+        generic_terms.extend(normalized_words)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in base_terms + generic_terms:
+        normalized = term.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+
+    return deduped
 
 
 def extract_json_object(raw_text: str) -> dict | None:
@@ -74,7 +121,8 @@ def fetch_newsapi_articles(company_name: str) -> list[dict]:
 
 
 def fetch_google_rss_articles(company_name: str) -> list[dict]:
-    query = urllib.parse.quote(company_name)
+    query_terms = build_company_search_terms(company_name)
+    query = urllib.parse.quote(f"({company_name} OR {' OR '.join(query_terms[:3])}) stock")
     url = f"https://news.google.com/rss/search?q={query}&hl={settings.news_language}-US&gl=US&ceid=US:{settings.news_language}"
     feed = feedparser.parse(url)
 
@@ -90,6 +138,25 @@ def fetch_google_rss_articles(company_name: str) -> list[dict]:
             }
         )
     return articles
+
+
+def is_relevant_financial_article(company_name: str, title: str, description: str = "", source: str = "") -> bool:
+    text = f"{title} {description}".lower()
+    aliases = build_company_search_terms(company_name)
+    mentions_company = any(alias in text for alias in aliases)
+    if not mentions_company:
+        return False
+
+    has_noisy_term = any(term in text for term in NOISY_NEWS_TERMS)
+    has_finance_context = any(term in text for term in FINANCE_CONTEXT_TERMS)
+    if has_noisy_term and not has_finance_context:
+        return False
+
+    source_text = str(source).lower()
+    if "pypi" in source_text or "github" in source_text:
+        return False
+
+    return True
 
 
 def fetch_reddit_posts(company_name: str) -> list[dict]:
@@ -130,6 +197,10 @@ def fetch_reddit_posts(company_name: str) -> list[dict]:
         combined_text = f"{title} {selftext}".lower()
         if company_lower not in combined_text:
             continue
+        if str(subreddit).lower() not in FINANCE_SUBREDDITS:
+            continue
+        if not is_relevant_financial_article(company_name, title, selftext, str(subreddit)):
+            continue
 
         posts.append(
             {
@@ -158,6 +229,20 @@ def dedupe_articles(articles: list[dict]) -> list[dict]:
     return deduped
 
 
+def filter_relevant_articles(company_name: str, articles: list[dict]) -> list[dict]:
+    filtered = [
+        article
+        for article in articles
+        if is_relevant_financial_article(
+            company_name,
+            str(article.get("title", "")),
+            str(article.get("description", "")),
+            str(article.get("source", "")),
+        )
+    ]
+    return dedupe_articles(filtered)
+
+
 def fetch_articles(company_name: str) -> list[dict]:
     source = settings.news_source.strip().lower()
     articles: list[dict] = []
@@ -171,7 +256,8 @@ def fetch_articles(company_name: str) -> list[dict]:
         articles = fetch_google_rss_articles(company_name)
 
     combined = articles + fetch_reddit_posts(company_name)
-    return dedupe_articles(combined)[: max(settings.news_fetch_limit, settings.reddit_post_limit)]
+    filtered = filter_relevant_articles(company_name, combined)
+    return filtered[: max(settings.news_fetch_limit, settings.reddit_post_limit)]
 
 
 def infer_sentiment_from_articles(articles: list[dict]) -> tuple[str, float]:

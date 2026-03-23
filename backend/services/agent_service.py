@@ -31,6 +31,55 @@ class AnalysisOutput(BaseModel):
 class AgentService:
     def __init__(self):
         self.llm = get_llm()
+
+    def _build_positioning_hint(self, company: str, market_snapshot: Dict[str, Any], news_snapshot: Dict[str, Any]) -> str | None:
+        sector = market_snapshot.get("sector")
+        industry = market_snapshot.get("industry")
+        sentiment = news_snapshot.get("sentiment", "neutral")
+        articles = news_snapshot.get("articles", []) if isinstance(news_snapshot, dict) else []
+
+        parts: list[str] = []
+        if isinstance(industry, str) and industry != "Data Not Available":
+            parts.append(f"its positioning is tied closely to execution in {industry.lower()}")
+        elif isinstance(sector, str) and sector != "Data Not Available":
+            parts.append(f"its positioning depends on how well it executes within the {sector.lower()} sector")
+
+        if articles:
+            sources = [str(article.get("source", "")).strip() for article in articles[:2] if article.get("source")]
+            if sources:
+                parts.append(f"recent coverage from {', '.join(sources)} suggests investors are watching execution closely")
+
+        if sentiment == "positive":
+            parts.append("recent sentiment offers some support, but it still needs operational follow-through")
+        elif sentiment == "negative":
+            parts.append("negative sentiment increases pressure on management to defend the current thesis")
+
+        if not parts:
+            return f"{company}'s competitive position depends on product execution, pricing discipline, and its ability to defend demand in its end markets."
+
+        return " ".join(parts).strip()
+
+    def _build_risk_hint(self, company: str, market_snapshot: Dict[str, Any], news_snapshot: Dict[str, Any]) -> str | None:
+        sector = market_snapshot.get("sector")
+        industry = market_snapshot.get("industry")
+        sentiment = news_snapshot.get("sentiment", "neutral")
+        articles = news_snapshot.get("articles", []) if isinstance(news_snapshot, dict) else []
+
+        parts: list[str] = []
+        if isinstance(industry, str) and industry != "Data Not Available":
+            parts.append(f"{industry.lower()} demand can change quickly if customers delay spending or competitors gain share")
+        elif isinstance(sector, str) and sector != "Data Not Available":
+            parts.append(f"{sector.lower()} conditions can shift quickly with pricing pressure, regulation, or weaker demand")
+
+        if sentiment == "negative":
+            parts.append("recent negative news increases near-term execution and reputation risk")
+        elif sentiment == "positive":
+            parts.append("even supportive recent news can reverse quickly if expectations become too high")
+
+        if articles:
+            parts.append("headline-driven sentiment adds volatility, especially when the fundamental picture is incomplete")
+
+        return " ".join(parts).strip() if parts else None
         
     def _validate_data(self, parsed: AnalysisOutput) -> AnalysisOutput:
         """Data Validation Layer preventing critical empty logic structure cleanly matching fallbacks."""
@@ -225,6 +274,9 @@ class AgentService:
                     summary += " Recent news tone is negative, which adds pressure."
                 elif sentiment == "neutral":
                     summary += " Recent news tone is neutral."
+                extra_risk = self._build_risk_hint(company, market_snapshot, news_snapshot)
+                if extra_risk:
+                    summary += f" {extra_risk}"
                 paragraphs.append(summary)
                 continue
 
@@ -256,7 +308,11 @@ class AgentService:
                 company_risks.append(f"the {sector} sector can change quickly because of competition, execution risk, and shifts in demand")
             else:
                 company_risks.append("competition, execution risk, and demand shifts can still change the outlook quickly")
-            paragraphs.append(f"- {company}: The main risks are " + ", ".join(company_risks) + ".")
+            sentence = f"- {company}: The main risks are " + ", ".join(company_risks) + "."
+            extra_risk = self._build_risk_hint(company, market_snapshot, news_snapshot)
+            if extra_risk:
+                sentence += f" {extra_risk}"
+            paragraphs.append(sentence)
 
         if document_insights == "No documents were provided.":
             paragraphs.append("- Note: No supporting documents were uploaded, so this view is based only on market data and recent news.")
@@ -316,6 +372,10 @@ class AgentService:
                 reason_parts.append("recent news tone is supportive")
             else:
                 reason_parts.append("recent news tone is neutral")
+
+            positioning_hint = self._build_positioning_hint(company, market_snapshot, news_snapshot)
+            if positioning_hint:
+                reason_parts.append(positioning_hint)
 
             recommendations.append(
                 f"- {company}: Current view is {stance}. "
