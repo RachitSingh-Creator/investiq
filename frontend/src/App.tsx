@@ -21,6 +21,14 @@ interface AnalysisResult {
     confidence?: number;
     stance?: string;
     notes?: string[];
+    rank?: number;
+    decision_tag?: string;
+    breakdown?: {
+      growth?: number;
+      balance_sheet?: number;
+      sentiment?: number;
+      data_quality?: number;
+    };
   }>;
   news_summary: string;
   document_insights: string;
@@ -270,6 +278,10 @@ function App() {
         </h3>
         <div className="market-data-grid">
           <div className="market-metric">
+            <span className="metric-label">Rank</span>
+            <span className="metric-value">{typeof scorecard.rank === 'number' ? `#${scorecard.rank}` : 'N/A'}</span>
+          </div>
+          <div className="market-metric">
             <span className="metric-label">Score</span>
             <span className="metric-value">{typeof scorecard.score === 'number' ? `${scorecard.score}/100` : 'N/A'}</span>
           </div>
@@ -281,7 +293,31 @@ function App() {
             <span className="metric-label">Stance</span>
             <span className="metric-value">{scorecard.stance ?? 'N/A'}</span>
           </div>
+          <div className="market-metric">
+            <span className="metric-label">Decision Tag</span>
+            <span className="metric-value">{scorecard.decision_tag ?? 'N/A'}</span>
+          </div>
         </div>
+        {scorecard.breakdown && (
+          <div className="market-data-grid" style={{ marginTop: '1rem' }}>
+            <div className="market-metric">
+              <span className="metric-label">Growth</span>
+              <span className="metric-value">{typeof scorecard.breakdown.growth === 'number' ? `${scorecard.breakdown.growth}/40` : 'N/A'}</span>
+            </div>
+            <div className="market-metric">
+              <span className="metric-label">Balance Sheet</span>
+              <span className="metric-value">{typeof scorecard.breakdown.balance_sheet === 'number' ? `${scorecard.breakdown.balance_sheet}/20` : 'N/A'}</span>
+            </div>
+            <div className="market-metric">
+              <span className="metric-label">Sentiment</span>
+              <span className="metric-value">{typeof scorecard.breakdown.sentiment === 'number' ? `${scorecard.breakdown.sentiment}/20` : 'N/A'}</span>
+            </div>
+            <div className="market-metric">
+              <span className="metric-label">Data Quality</span>
+              <span className="metric-value">{typeof scorecard.breakdown.data_quality === 'number' ? `${scorecard.breakdown.data_quality}/20` : 'N/A'}</span>
+            </div>
+          </div>
+        )}
         {Array.isArray(scorecard.notes) && scorecard.notes.length > 0 && (
           <div className="market-data-note">
             {scorecard.notes.join('; ')}.

@@ -95,9 +95,12 @@ class AgentService:
         return risks[:3]
 
     def _compute_company_score(self, company: str, market_snapshot: Dict[str, Any], news_snapshot: Dict[str, Any]) -> Dict[str, Any]:
-        score = 50
         confidence = 35
         notes: list[str] = []
+        growth_score = 20
+        balance_score = 10
+        sentiment_score = 10
+        data_quality_score = 10
 
         revenue_growth = market_snapshot.get("revenueGrowth")
         debt_to_equity = market_snapshot.get("debtToEquity")
@@ -110,58 +113,68 @@ class AgentService:
                 filled_fields += 1
 
         confidence += min(35, filled_fields * 8)
+        data_quality_score = min(20, max(0, filled_fields * 3))
         if isinstance(revenue_growth, (int, float)):
             if revenue_growth >= 0.15:
-                score += 18
+                growth_score = 38
                 notes.append("strong growth")
             elif revenue_growth >= 0.05:
-                score += 10
+                growth_score = 30
                 notes.append("positive growth")
             elif revenue_growth < 0:
-                score -= 18
+                growth_score = 6
                 notes.append("negative growth")
             else:
-                score += 2
+                growth_score = 22
                 notes.append("modest growth")
         else:
-            score -= 12
+            growth_score = 8
             confidence -= 12
             notes.append("growth data incomplete")
 
         if isinstance(debt_to_equity, (int, float)):
             if debt_to_equity <= 1:
-                score += 10
+                balance_score = 18
                 notes.append("low leverage")
             elif debt_to_equity <= 3:
-                score += 3
+                balance_score = 14
                 notes.append("manageable leverage")
             else:
-                score -= 10
+                balance_score = 6
                 notes.append("elevated leverage")
         else:
+            balance_score = 8
             confidence -= 10
             notes.append("balance sheet data incomplete")
 
         if sentiment == "positive":
-            score += 5
+            sentiment_score = 16
             notes.append("supportive news tone")
         elif sentiment == "negative":
-            score -= 8
+            sentiment_score = 5
             notes.append("negative news tone")
+        else:
+            sentiment_score = 10
 
         if source_quality == "high":
             confidence += 12
+            sentiment_score = min(20, sentiment_score + 2)
+            data_quality_score = min(20, data_quality_score + 4)
         elif source_quality == "medium":
             confidence += 4
+            data_quality_score = min(20, data_quality_score + 1)
         else:
             confidence -= 8
+            sentiment_score = max(0, sentiment_score - 2)
+            data_quality_score = max(0, data_quality_score - 4)
             notes.append("mixed or weak news sources")
 
         if not self._company_has_strong_fundamentals(market_snapshot):
-            score -= 10
+            data_quality_score = max(0, data_quality_score - 6)
             confidence -= 15
             notes.append("limited fundamental coverage")
 
+        score = growth_score + balance_score + sentiment_score + data_quality_score
         score = max(0, min(100, int(round(score))))
         confidence = max(10, min(95, int(round(confidence))))
 
@@ -174,19 +187,51 @@ class AgentService:
         else:
             stance = "avoid decision"
 
+        if score >= 75 and confidence >= 70:
+            decision_tag = "Growth + Quality"
+        elif score >= 60:
+            decision_tag = "Balanced Opportunity"
+        elif confidence < 45:
+            decision_tag = "Insufficient Data"
+        elif isinstance(revenue_growth, (int, float)) and revenue_growth < 0:
+            decision_tag = "Turnaround Risk"
+        else:
+            decision_tag = "Watchlist Candidate"
+
         return {
             "score": score,
             "confidence": confidence,
             "stance": stance,
             "notes": notes[:4],
+            "decision_tag": decision_tag,
+            "breakdown": {
+                "growth": growth_score,
+                "balance_sheet": balance_score,
+                "sentiment": sentiment_score,
+                "data_quality": data_quality_score,
+            },
         }
 
     def _build_company_scores(self, companies: List[str], market_data: Dict[str, Any], news_data: Dict[str, Any]) -> Dict[str, Any]:
-        scorecard: Dict[str, Any] = {}
+        scored_entries: list[tuple[str, Dict[str, Any]]] = []
         for company in companies:
             market_snapshot = market_data.get(company, {}) if isinstance(market_data, dict) else {}
             news_snapshot = news_data.get(company, {}) if isinstance(news_data, dict) else {}
-            scorecard[company] = self._compute_company_score(company, market_snapshot, news_snapshot)
+            scored_entries.append((company, self._compute_company_score(company, market_snapshot, news_snapshot)))
+
+        ranked = sorted(
+            scored_entries,
+            key=lambda item: (item[1].get("score", 0), item[1].get("confidence", 0)),
+            reverse=True,
+        )
+
+        rank_lookup = {company: index + 1 for index, (company, _) in enumerate(ranked)}
+        scorecard: Dict[str, Any] = {}
+        for company, snapshot in scored_entries:
+            scorecard[company] = {
+                **snapshot,
+                "rank": rank_lookup[company],
+            }
         return scorecard
 
     def _build_positioning_hint(self, company: str, market_snapshot: Dict[str, Any], news_snapshot: Dict[str, Any]) -> str | None:
