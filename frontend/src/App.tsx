@@ -31,6 +31,11 @@ const getResultNoticeTone = (message: string) => {
   return 'info'
 }
 
+const shouldShowFallbackNotice = (result: AnalysisResult) => {
+  if (!result.used_fallback || !result.llm_status) return false
+  return !result.news_summary?.trim() || !result.risk_analysis?.trim() || !result.final_recommendation?.trim()
+}
+
 // Reusable Collapsible Card Component
 interface CollapsibleCardProps {
   title: string;
@@ -333,7 +338,7 @@ function App() {
 
       {result && !loading && (
         <div className="results-container">
-          {result.used_fallback && result.llm_status && (
+          {shouldShowFallbackNotice(result) && (
             <motion.div
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
