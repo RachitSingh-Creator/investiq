@@ -15,7 +15,7 @@ services:
       - key: MODEL_MAX_TOKENS
         value: "1024"
       - key: REQUEST_TIMEOUT
-        value: "12"
+        value: "20"
       - key: MAX_RETRIES
         value: "3"
       - key: RATE_LIMIT_PER_MINUTE

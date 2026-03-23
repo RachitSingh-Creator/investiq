@@ -211,7 +211,7 @@ function App() {
     
     return Object.entries(marketData).map(([company, data]) => {
       const metrics = Object.entries(data)
-        .filter(([k]) => k !== 'symbol' && k !== 'companyName' && k !== 'currency')
+        .filter(([k]) => k !== 'symbol' && k !== 'companyName' && k !== 'currency' && !k.startsWith('_'))
         .map(([key, val]) => ({
           key,
           formattedValue: formatMetricValue(key, val, typeof data.currency === 'string' ? data.currency : undefined),

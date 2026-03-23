@@ -1,6 +1,7 @@
 import json
 import logging
 import requests
+import yfinance as yf
 from langchain.tools import tool
 from tools.ticker_resolver import get_ticker
 from functools import lru_cache
@@ -61,6 +62,7 @@ def _empty_market_stats(company_name: str, ticker_str: str) -> dict:
         "industry": "Data Not Available",
         "ebitda": "Data Not Available",
         "debtToEquity": "Data Not Available",
+        "_providerStatus": {"none": ["no_data"]},
     }
 
 
@@ -125,6 +127,35 @@ def fetch_eodhd_fundamentals(ticker_str: str) -> dict:
     response.raise_for_status()
     payload = response.json()
     return payload if isinstance(payload, dict) else {}
+
+
+@lru_cache(maxsize=128)
+def fetch_yfinance_payload(ticker_str: str) -> dict:
+    ticker = yf.Ticker(ticker_str)
+    payload: dict = {}
+
+    try:
+        info = ticker.get_info()
+        if isinstance(info, dict):
+            payload["info"] = info
+    except Exception as exc:
+        logger.warning("yfinance info request failed for %s: %s", ticker_str, exc)
+
+    try:
+        financials = ticker.financials
+        if financials is not None and not financials.empty:
+            payload["financials"] = financials.to_dict()
+    except Exception as exc:
+        logger.warning("yfinance financials request failed for %s: %s", ticker_str, exc)
+
+    try:
+        balance_sheet = ticker.balance_sheet
+        if balance_sheet is not None and not balance_sheet.empty:
+            payload["balance_sheet"] = balance_sheet.to_dict()
+    except Exception as exc:
+        logger.warning("yfinance balance sheet request failed for %s: %s", ticker_str, exc)
+
+    return payload
 
 
 def extract_chart_price(chart_payload: dict):
@@ -252,6 +283,14 @@ def _normalize_percentage_metric(value: float | None) -> float | None:
 def _extract_percentage(value):
     numeric = _to_float(value)
     return _normalize_percentage_metric(numeric)
+
+
+def _first_numeric(values: list) -> float | None:
+    for value in values:
+        numeric = _to_float(value)
+        if numeric is not None:
+            return numeric
+    return None
 
 
 def _extract_finnhub_share_outstanding(profile: dict, metric_payload: dict) -> float | None:
@@ -433,6 +472,82 @@ def build_eodhd_fundamental_stats(company_name: str, ticker_str: str, fundamenta
     }
 
 
+def _extract_yfinance_statement_values(statement_payload: dict, row_candidates: list[str]) -> list[float]:
+    if not isinstance(statement_payload, dict):
+        return []
+
+    for row_name, columns in statement_payload.items():
+        if str(row_name) not in row_candidates or not isinstance(columns, dict):
+            continue
+
+        values: list[float] = []
+        for _, value in sorted(columns.items(), key=lambda item: str(item[0]), reverse=True):
+            numeric = _to_float(value)
+            if numeric is not None:
+                values.append(numeric)
+
+        if values:
+            return values
+
+    return []
+
+
+def build_yfinance_fundamental_stats(company_name: str, ticker_str: str, payload: dict) -> dict:
+    info = payload.get("info", {}) if isinstance(payload, dict) else {}
+    financials = payload.get("financials", {}) if isinstance(payload, dict) else {}
+    balance_sheet = payload.get("balance_sheet", {}) if isinstance(payload, dict) else {}
+
+    if not isinstance(info, dict):
+        info = {}
+
+    revenue_series = _extract_yfinance_statement_values(
+        financials,
+        ["Total Revenue", "Operating Revenue", "Revenue"],
+    )
+    balance_debt_series = _extract_yfinance_statement_values(
+        balance_sheet,
+        ["Total Debt", "Net Debt", "Long Term Debt And Capital Lease Obligation", "Long Term Debt"],
+    )
+    balance_equity_series = _extract_yfinance_statement_values(
+        balance_sheet,
+        ["Stockholders Equity", "Common Stock Equity", "Total Equity Gross Minority Interest"],
+    )
+
+    revenue = _first_numeric([
+        info.get("totalRevenue"),
+        revenue_series[0] if revenue_series else None,
+    ])
+
+    revenue_growth = _extract_percentage(info.get("revenueGrowth"))
+    if revenue_growth is None and len(revenue_series) >= 2 and revenue_series[1] not in (None, 0):
+        revenue_growth = (revenue_series[0] - revenue_series[1]) / revenue_series[1]
+
+    debt_to_equity = _first_numeric([
+        _extract_percentage(info.get("debtToEquity")),
+    ])
+    if debt_to_equity is None and balance_debt_series and balance_equity_series and balance_equity_series[0] not in (None, 0):
+        debt_to_equity = balance_debt_series[0] / balance_equity_series[0]
+
+    market_cap = _first_numeric([
+        info.get("marketCap"),
+        info.get("enterpriseValue"),
+    ])
+
+    return {
+        "symbol": ticker_str,
+        "companyName": info.get("longName") or info.get("shortName") or company_name,
+        "currency": info.get("currency") or infer_currency_from_symbol(ticker_str),
+        "currentPrice": _first_numeric([info.get("currentPrice"), info.get("regularMarketPrice")]) or "Data Not Available",
+        "marketCap": market_cap or "Data Not Available",
+        "revenue": revenue or "Data Not Available",
+        "revenueGrowth": revenue_growth if revenue_growth is not None else "Data Not Available",
+        "sector": info.get("sector") or info.get("sectorDisp") or "Data Not Available",
+        "industry": info.get("industry") or info.get("industryDisp") or "Data Not Available",
+        "ebitda": _first_numeric([info.get("ebitda")]) or "Data Not Available",
+        "debtToEquity": debt_to_equity if debt_to_equity is not None else "Data Not Available",
+    }
+
+
 def build_finnhub_fundamental_stats(company_name: str, ticker_str: str, profile: dict, basic_financials: dict, financials: dict) -> dict:
     revenue = _extract_finnhub_revenue(financials)
     if revenue is None:
@@ -535,6 +650,7 @@ def fetch_market_logic(company_name: str) -> str:
         summary_payload = {}
         chart_payload = {}
         quote_payload = {}
+        finnhub_filled_fields: list[str] = []
 
         try:
             summary_payload = fetch_quote_summary_data(ticker_str)
@@ -647,10 +763,27 @@ def fetch_market_logic(company_name: str) -> str:
             except requests.RequestException as exc:
                 logger.warning("EODHD fundamentals request failed for %s (%s): %s", company_name, ticker_str, exc)
 
+        yfinance_missing = missing_fields(
+            market_stats,
+            ["marketCap", "revenue", "revenueGrowth", "sector", "industry", "ebitda", "debtToEquity"],
+        )
+        if yfinance_missing and is_indian_equity(ticker_str):
+            yfinance_payload = fetch_yfinance_payload(ticker_str)
+            if yfinance_payload:
+                yfinance_stats = build_yfinance_fundamental_stats(company_name, ticker_str, yfinance_payload)
+                yfinance_filled_fields = sorted(
+                    key for key, value in yfinance_stats.items()
+                    if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+                )
+                market_stats = merge_market_stats(market_stats, yfinance_stats)
+                if yfinance_filled_fields:
+                    provider_fields["yfinance"] = yfinance_filled_fields
+
         final_fields = [
             key for key, value in market_stats.items()
             if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
         ]
+        market_stats["_providerStatus"] = provider_fields or {"none": []}
         logger.info(
             "Market data providers for %s (%s): %s | final fields: %s",
             company_name,
