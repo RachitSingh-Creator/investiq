@@ -508,7 +508,6 @@ class AgentService:
             market_snapshot = market_data.get(company, {}) if isinstance(market_data, dict) else {}
             news_snapshot = news_data.get(company, {}) if isinstance(news_data, dict) else {}
             score_snapshot = self._compute_company_score(company, market_snapshot, news_snapshot)
-
             price = market_snapshot.get("currentPrice", "N/A")
             revenue_growth = market_snapshot.get("revenueGrowth")
             debt_to_equity = market_snapshot.get("debtToEquity")

@@ -387,6 +387,16 @@ def _normalize_percentage_metric(value: float | None) -> float | None:
     return value
 
 
+def _sanitize_revenue_growth(value: float | None) -> float | None:
+    normalized = _normalize_percentage_metric(value)
+    if normalized is None:
+        return None
+    # Guard against obviously broken growth figures like -293% or +1200%.
+    if normalized < -1 or normalized > 3:
+        return None
+    return normalized
+
+
 def _extract_percentage(value):
     numeric = _to_float(value)
     return _normalize_percentage_metric(numeric)
@@ -537,7 +547,7 @@ def _extract_eodhd_revenue(fundamentals_payload: dict) -> float | None:
 def _extract_eodhd_revenue_growth(fundamentals_payload: dict) -> float | None:
     growth = fundamentals_payload.get("Growth") if isinstance(fundamentals_payload, dict) else {}
     if isinstance(growth, dict):
-        value = _extract_percentage(
+        value = _sanitize_revenue_growth(
             _extract_dict_value_case_insensitive(
                 growth,
                 [
@@ -654,9 +664,9 @@ def build_alphavantage_fundamental_stats(company_name: str, ticker_str: str, ove
     revenue = _to_float(overview_payload.get("RevenueTTM"))
     ebitda = _to_float(overview_payload.get("EBITDA"))
 
-    revenue_growth = _extract_percentage(overview_payload.get("QuarterlyRevenueGrowthYOY"))
+    revenue_growth = _sanitize_revenue_growth(_to_float(overview_payload.get("QuarterlyRevenueGrowthYOY")))
     if revenue_growth is None:
-        revenue_growth = _extract_percentage(overview_payload.get("QuarterlyEarningsGrowthYOY"))
+        revenue_growth = _sanitize_revenue_growth(_to_float(overview_payload.get("QuarterlyEarningsGrowthYOY")))
 
     debt_to_equity = _extract_percentage(overview_payload.get("DebtToEquityRatio"))
 
@@ -758,9 +768,9 @@ def build_yfinance_fundamental_stats(company_name: str, ticker_str: str, payload
         revenue_series[0] if revenue_series else None,
     ])
 
-    revenue_growth = _extract_percentage(info.get("revenueGrowth"))
+    revenue_growth = _sanitize_revenue_growth(_to_float(info.get("revenueGrowth")))
     if revenue_growth is None and len(revenue_series) >= 2 and revenue_series[1] not in (None, 0):
-        revenue_growth = (revenue_series[0] - revenue_series[1]) / revenue_series[1]
+        revenue_growth = _sanitize_revenue_growth((revenue_series[0] - revenue_series[1]) / revenue_series[1])
 
     debt_to_equity = _first_numeric([
         _extract_percentage(info.get("debtToEquity")),
@@ -793,7 +803,7 @@ def build_finnhub_fundamental_stats(company_name: str, ticker_str: str, profile:
     if revenue is None:
         revenue = _estimate_revenue_from_per_share(profile, basic_financials)
 
-    revenue_growth = _normalize_percentage_metric(
+    revenue_growth = _sanitize_revenue_growth(
         _extract_finnhub_metric(
             basic_financials,
             [
@@ -874,7 +884,7 @@ def build_market_stats(company_name: str, ticker_str: str, summary_payload: dict
         "currentPrice": current_price,
         "marketCap": market_cap,
         "revenue": extract_value(financial_data.get("totalRevenue")),
-        "revenueGrowth": extract_value(financial_data.get("revenueGrowth")),
+        "revenueGrowth": _sanitize_revenue_growth(_to_float(extract_value(financial_data.get("revenueGrowth"), None))),
         "sector": extract_value(asset_profile.get("sector")),
         "industry": extract_value(asset_profile.get("industry")),
         "ebitda": extract_value(financial_data.get("ebitda")),
