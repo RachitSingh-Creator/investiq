@@ -36,6 +36,18 @@ FINANCE_SUBREDDITS = {
     "r/valueinvesting", "r/economy", "r/technology", "r/apple", "r/nvidia",
     "r/teslainvestorsclub", "r/microsoft", "r/amazon", "r/google", "r/meta",
 }
+TRUSTED_NEWS_SOURCES = {
+    "reuters", "bloomberg", "cnbc", "wall street journal", "wsj", "financial times",
+    "marketwatch", "associated press", "ap news", "economic times", "mint",
+    "business standard", "moneycontrol", "livemint", "the hindu businessline",
+}
+LOW_QUALITY_SOURCE_TERMS = {
+    "alltoc", "reddit", "youtube", "instagram", "facebook", "blog", "medium", "substack",
+}
+LOW_QUALITY_HEADLINE_TERMS = {
+    "#tech", "#ai", "#stocks", "viral", "hyped", "keyboard launched", "secure messaging",
+    "genz", "samvadini",
+}
 
 
 def build_company_search_terms(company_name: str) -> list[str]:
@@ -155,8 +167,41 @@ def is_relevant_financial_article(company_name: str, title: str, description: st
     source_text = str(source).lower()
     if "pypi" in source_text or "github" in source_text:
         return False
+    if any(term in source_text for term in LOW_QUALITY_SOURCE_TERMS) and not any(term in source_text for term in TRUSTED_NEWS_SOURCES):
+        return False
+    if any(term in text for term in LOW_QUALITY_HEADLINE_TERMS):
+        return False
 
     return True
+
+
+def article_quality_score(article: dict) -> int:
+    title = str(article.get("title", "")).lower()
+    description = str(article.get("description", "")).lower()
+    source = str(article.get("source", "")).lower()
+    text = f"{title} {description}"
+
+    score = 0
+    if any(trusted in source for trusted in TRUSTED_NEWS_SOURCES):
+        score += 6
+    if any(term in text for term in FINANCE_CONTEXT_TERMS):
+        score += 3
+    if any(term in source for term in LOW_QUALITY_SOURCE_TERMS):
+        score -= 4
+    if any(term in text for term in LOW_QUALITY_HEADLINE_TERMS):
+        score -= 5
+    if "analyst" in text or "earnings" in text or "revenue" in text:
+        score += 2
+
+    return score
+
+
+def infer_source_quality(articles: list[dict]) -> str:
+    if any(any(trusted in str(article.get("source", "")).lower() for trusted in TRUSTED_NEWS_SOURCES) for article in articles):
+        return "high"
+    if articles:
+        return "medium"
+    return "low"
 
 
 def fetch_reddit_posts(company_name: str) -> list[dict]:
@@ -240,7 +285,9 @@ def filter_relevant_articles(company_name: str, articles: list[dict]) -> list[di
             str(article.get("source", "")),
         )
     ]
-    return dedupe_articles(filtered)
+    deduped = dedupe_articles(filtered)
+    ranked = sorted(deduped, key=article_quality_score, reverse=True)
+    return [article for article in ranked if article_quality_score(article) >= 0]
 
 
 def fetch_articles(company_name: str) -> list[dict]:
@@ -288,11 +335,11 @@ def build_fallback_news_summary(company_name: str, articles: list[dict]) -> str:
         return "No current news found."
 
     headlines = [article.get("title") for article in articles[:2] if article.get("title")]
-    reddit_sources = [article.get("source") for article in articles if str(article.get("source", "")).lower().startswith("r/")]
+    source_quality = infer_source_quality(articles)
 
     summary = "Recent headlines include " + "; ".join(headlines) + "." if headlines else "Recent coverage was retrieved."
-    if reddit_sources:
-        summary += " Reddit discussion was also sampled for retail sentiment context."
+    if source_quality != "high":
+        summary += " Source quality is mixed, so this summary should be treated cautiously."
     return summary
 
 def fetch_and_analyze_news(company_name: str) -> str:
@@ -307,7 +354,8 @@ def fetch_and_analyze_news(company_name: str) -> str:
             "articles": [],
             "sentiment": "neutral",
             "confidence": 0.5,
-            "summary": "No current news found."
+            "summary": "No current news found.",
+            "source_quality": "low",
         })
         
     raw_text_for_llm = ""
@@ -346,6 +394,7 @@ def fetch_and_analyze_news(company_name: str) -> str:
                 "sentiment": sentiment,
                 "confidence": confidence,
                 "summary": fallback_summary,
+                "source_quality": infer_source_quality(articles),
             }
         )
     
@@ -362,6 +411,7 @@ def fetch_and_analyze_news(company_name: str) -> str:
             "sentiment": parsed_sentiment.get("sentiment", "neutral"),
             "confidence": parsed_sentiment.get("confidence", 0.5),
             "summary": parsed_sentiment.get("summary", "Recent headlines were retrieved, but the summary was incomplete."),
+            "source_quality": infer_source_quality(articles),
         }
     else:
         logger.error("Failed to parse LLM JSON for %s", company_name)
@@ -371,7 +421,8 @@ def fetch_and_analyze_news(company_name: str) -> str:
             "articles": articles,
             "sentiment": sentiment,
             "confidence": confidence,
-            "summary": fallback_summary
+            "summary": fallback_summary,
+            "source_quality": infer_source_quality(articles),
         }
         
     return json.dumps(payload)

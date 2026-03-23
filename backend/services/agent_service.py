@@ -32,8 +32,43 @@ class AgentService:
     def __init__(self):
         self.llm = get_llm()
 
+    def _normalize_sector_label(self, company: str, sector: Any, industry: Any) -> str:
+        company_lower = str(company).lower()
+        sector_text = str(sector) if isinstance(sector, str) else ""
+        industry_text = str(industry) if isinstance(industry, str) else ""
+
+        if company_lower == "meta" and sector_text.lower() == "media":
+            return "Communication Services"
+        if sector_text and sector_text != "Data Not Available":
+            return sector_text
+        if "internet content" in industry_text.lower() or "social" in industry_text.lower():
+            return "Communication Services"
+        return sector_text or "Data Not Available"
+
+    def _company_has_strong_fundamentals(self, market_snapshot: Dict[str, Any]) -> bool:
+        filled = 0
+        for key in ("marketCap", "revenue", "revenueGrowth", "sector", "industry", "ebitda", "debtToEquity"):
+            value = market_snapshot.get(key)
+            if value not in (None, "", "Data Not Available", "N/A"):
+                filled += 1
+        return filled >= 4
+
+    def _comparison_limitation_note(self, companies: List[str], market_data: Dict[str, Any]) -> str | None:
+        if len(companies) < 2:
+            return None
+
+        weak_companies = [
+            company for company in companies
+            if not self._company_has_strong_fundamentals(market_data.get(company, {}) if isinstance(market_data, dict) else {})
+        ]
+        if not weak_companies:
+            return None
+
+        joined = ", ".join(weak_companies)
+        return f"Comparison is limited because full financial data is unavailable or incomplete for {joined}."
+
     def _build_positioning_hint(self, company: str, market_snapshot: Dict[str, Any], news_snapshot: Dict[str, Any]) -> str | None:
-        sector = market_snapshot.get("sector")
+        sector = self._normalize_sector_label(company, market_snapshot.get("sector"), market_snapshot.get("industry"))
         industry = market_snapshot.get("industry")
         sentiment = news_snapshot.get("sentiment", "neutral")
         articles = news_snapshot.get("articles", []) if isinstance(news_snapshot, dict) else []
@@ -60,7 +95,7 @@ class AgentService:
         return " ".join(parts).strip().rstrip(".") + "."
 
     def _build_risk_hint(self, company: str, market_snapshot: Dict[str, Any], news_snapshot: Dict[str, Any]) -> str | None:
-        sector = market_snapshot.get("sector")
+        sector = self._normalize_sector_label(company, market_snapshot.get("sector"), market_snapshot.get("industry"))
         industry = market_snapshot.get("industry")
         sentiment = news_snapshot.get("sentiment", "neutral")
         articles = news_snapshot.get("articles", []) if isinstance(news_snapshot, dict) else []
@@ -223,9 +258,11 @@ class AgentService:
             articles = payload.get("articles", []) if isinstance(payload, dict) else []
             summary = payload.get("summary") if isinstance(payload, dict) else None
             sentiment = payload.get("sentiment", "neutral") if isinstance(payload, dict) else "neutral"
+            source_quality = payload.get("source_quality", "low") if isinstance(payload, dict) else "low"
 
             if summary and "failed compiling sentiment" not in summary.lower():
-                lines.append(f"- {company}: News tone looks {sentiment}. {summary}")
+                quality_note = " Source reliability looks limited." if source_quality != "high" else ""
+                lines.append(f"- {company}: News tone looks {sentiment}. {summary}{quality_note}")
                 continue
 
             if articles:
@@ -256,9 +293,10 @@ class AgentService:
 
             revenue_growth = market_snapshot.get("revenueGrowth")
             debt_to_equity = market_snapshot.get("debtToEquity")
-            sector = market_snapshot.get("sector", "its sector")
+            sector = self._normalize_sector_label(company, market_snapshot.get("sector"), market_snapshot.get("industry"))
             sentiment = news_snapshot.get("sentiment", "neutral")
             has_news = bool(news_snapshot.get("articles"))
+            source_quality = news_snapshot.get("source_quality", "low")
             price = market_snapshot.get("currentPrice", "Data Not Available")
 
             missing_growth = not isinstance(revenue_growth, (int, float))
@@ -274,6 +312,8 @@ class AgentService:
                     summary += " Recent news tone is negative, which adds pressure."
                 elif sentiment == "neutral":
                     summary += " Recent news tone is neutral."
+                if source_quality != "high":
+                    summary += " News reliability is mixed, so headline signals should be treated cautiously."
                 extra_risk = self._build_risk_hint(company, market_snapshot, news_snapshot)
                 if extra_risk:
                     summary += f" {extra_risk}"
@@ -303,6 +343,8 @@ class AgentService:
                 company_risks.append("recent news sentiment is negative")
             elif not has_news:
                 company_risks.append("there is not much recent news to confirm or challenge the investment case")
+            elif source_quality != "high":
+                company_risks.append("recent news coverage is available but source quality is mixed")
 
             if not missing_sector:
                 company_risks.append(f"the {sector} sector can change quickly because of competition, execution risk, and shifts in demand")
@@ -316,6 +358,10 @@ class AgentService:
 
         if document_insights == "No documents were provided.":
             paragraphs.append("- Note: No supporting documents were uploaded, so this view is based only on market data and recent news.")
+
+        limitation_note = self._comparison_limitation_note(companies, market_data)
+        if limitation_note:
+            paragraphs.append(f"- Note: {limitation_note}")
 
         return "\n".join(paragraphs)
 
@@ -338,7 +384,8 @@ class AgentService:
             revenue_growth = market_snapshot.get("revenueGrowth")
             debt_to_equity = market_snapshot.get("debtToEquity")
             sentiment = news_snapshot.get("sentiment", "neutral")
-            sector = market_snapshot.get("sector", "Data Not Available")
+            source_quality = news_snapshot.get("source_quality", "low")
+            sector = self._normalize_sector_label(company, market_snapshot.get("sector"), market_snapshot.get("industry"))
 
             stance = "watchlist"
             reason_parts: list[str] = []
@@ -348,13 +395,13 @@ class AgentService:
 
             if missing_growth and missing_debt and missing_sector:
                 recommendations.append(
-                    f"- {company}: Current view is watchlist. Price is {price}. "
+                    f"- {company}: Current view is avoid decision for now. Price is {price}. "
                     f"Reason: only limited live market data was available, so this is a low-confidence view, and recent news tone is {sentiment}."
                 )
                 continue
 
             if isinstance(revenue_growth, (int, float)) and revenue_growth >= 0.08:
-                stance = "cautiously positive"
+                stance = "constructive"
                 reason_parts.append(f"revenue growth is solid at {revenue_growth:.3f}")
             elif isinstance(revenue_growth, (int, float)) and revenue_growth < 0:
                 stance = "cautious"
@@ -372,6 +419,8 @@ class AgentService:
                 reason_parts.append("recent news tone is supportive")
             else:
                 reason_parts.append("recent news tone is neutral")
+            if source_quality != "high":
+                reason_parts.append("news-source quality is mixed")
 
             positioning_hint = self._build_positioning_hint(company, market_snapshot, news_snapshot)
             qualitative_note = positioning_hint if positioning_hint else ""
@@ -388,6 +437,10 @@ class AgentService:
 
         if document_insights != "No documents were provided.":
             recommendations.append("- Note: Uploaded documents should be reviewed before making a decision because they may change the conclusion.")
+
+        limitation_note = self._comparison_limitation_note(companies, market_data)
+        if limitation_note:
+            recommendations.append(f"- Note: {limitation_note}")
 
         return "\n".join(recommendations)
 
