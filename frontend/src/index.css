@@ -181,6 +181,32 @@ header p {
   gap: 1.5rem;
 }
 
+.result-notice {
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  line-height: 1.6;
+  font-weight: 500;
+}
+
+.result-notice-warning {
+  background-color: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fcd34d;
+}
+
+.result-notice-danger {
+  background-color: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.result-notice-info {
+  background-color: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.35);
+  color: #93c5fd;
+}
+
 .card {
   background-color: var(--panel-bg);
   border: 1px solid var(--border);

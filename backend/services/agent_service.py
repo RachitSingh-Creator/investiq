@@ -25,6 +25,8 @@ class AnalysisOutput(BaseModel):
     document_insights: str = Field(description="Any insights or specific points found in the provided documents. If none found or provided, explicitly state so.")
     risk_analysis: str = Field(description="Risk analysis paragraph.")
     final_recommendation: str = Field(description="Final recommendation based on growth, risks, market positioning, and documents.")
+    llm_status: str = Field(default="", description="Status message describing AI synthesis availability or fallback conditions.")
+    used_fallback: bool = Field(default=False, description="Whether the response used deterministic fallback logic instead of a successful LLM synthesis.")
 
 class AgentService:
     def __init__(self):
@@ -423,6 +425,8 @@ class AgentService:
                 news_data,
                 document_insights,
             )
+            parsed.llm_status = ""
+            parsed.used_fallback = False
             logger.info(f"Request strictly formatted successfully in {time.time() - start_time:.2f}s")
             return parsed.model_dump()
         except asyncio.TimeoutError:
@@ -444,7 +448,9 @@ class AgentService:
                 risk_analysis="Plaintext mode enabled. See final recommendation.",
                 final_recommendation=self._build_fallback_recommendation(
                     companies, market_data, news_data, document_insights, llm_status or "Plaintext mode is enabled."
-                )
+                ),
+                llm_status=llm_status or "Plaintext mode is enabled.",
+                used_fallback=True,
             )
             return self._validate_data(fallback).model_dump()
 
@@ -455,6 +461,8 @@ class AgentService:
             document_insights=document_insights,
             risk_analysis=self._build_grounded_risk_analysis(companies, market_data, news_data, document_insights),
             final_recommendation=self._build_grounded_recommendation(companies, market_data, news_data, document_insights),
+            llm_status=llm_status,
+            used_fallback=True,
         )
         return self._validate_data(fallback).model_dump()
 

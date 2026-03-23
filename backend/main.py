@@ -37,6 +37,8 @@ class AnalyzeResponse(BaseModel):
     document_insights: str
     risk_analysis: str
     final_recommendation: str
+    llm_status: str = ""
+    used_fallback: bool = False
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):

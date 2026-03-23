@@ -20,6 +20,15 @@ interface AnalysisResult {
   document_insights: string;
   risk_analysis: string;
   final_recommendation: string;
+  llm_status: string;
+  used_fallback: boolean;
+}
+
+const getResultNoticeTone = (message: string) => {
+  const lowered = message.toLowerCase()
+  if (lowered.includes('quota') || lowered.includes('timed out')) return 'warning'
+  if (lowered.includes('invalid') || lowered.includes('blocked') || lowered.includes('not available')) return 'danger'
+  return 'info'
 }
 
 // Reusable Collapsible Card Component
@@ -324,6 +333,16 @@ function App() {
 
       {result && !loading && (
         <div className="results-container">
+          {result.used_fallback && result.llm_status && (
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`result-notice result-notice-${getResultNoticeTone(result.llm_status)}`}
+            >
+              {result.llm_status} The analysis below uses grounded fallback logic from market data, news, and documents.
+            </motion.div>
+          )}
+
           {result.companies && result.companies.length > 0 && (
             <motion.div 
               className="entities-container"
