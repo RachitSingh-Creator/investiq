@@ -14,11 +14,31 @@ YAHOO_HEADERS = {
 }
 
 
+def infer_currency_from_symbol(ticker_str: str, fallback: str = "USD") -> str:
+    symbol = (ticker_str or "").upper()
+    suffix_currency_map = {
+        ".NS": "INR",
+        ".BO": "INR",
+        ".L": "GBP",
+        ".T": "JPY",
+        ".DE": "EUR",
+        ".PA": "EUR",
+        ".AS": "EUR",
+        ".MI": "EUR",
+    }
+
+    for suffix, currency in suffix_currency_map.items():
+        if symbol.endswith(suffix):
+            return currency
+
+    return fallback
+
+
 def _empty_market_stats(company_name: str, ticker_str: str) -> dict:
     return {
         "symbol": ticker_str,
         "companyName": company_name,
-        "currency": "USD",
+        "currency": infer_currency_from_symbol(ticker_str),
         "currentPrice": "Data Not Available",
         "marketCap": "Data Not Available",
         "revenue": "Data Not Available",
@@ -67,6 +87,16 @@ def fetch_chart_data(ticker_str: str) -> dict:
     response.raise_for_status()
     payload = response.json()
     result = ((payload.get("chart") or {}).get("result") or [{}])[0]
+    return result if isinstance(result, dict) else {}
+
+
+@lru_cache(maxsize=128)
+def fetch_quote_data(ticker_str: str) -> dict:
+    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker_str}"
+    response = requests.get(url, headers=YAHOO_HEADERS, timeout=8)
+    response.raise_for_status()
+    payload = response.json()
+    result = ((payload.get("quoteResponse") or {}).get("result") or [{}])[0]
     return result if isinstance(result, dict) else {}
 
 
@@ -159,7 +189,7 @@ def build_finnhub_stats(company_name: str, ticker_str: str, profile: dict, quote
     return {
         "symbol": ticker_str,
         "companyName": profile.get("name", company_name),
-        "currency": profile.get("currency", "USD"),
+        "currency": profile.get("currency") or infer_currency_from_symbol(ticker_str),
         "currentPrice": quote.get("c") or "Data Not Available",
         "marketCap": market_cap,
         "revenue": "Data Not Available",
@@ -268,7 +298,7 @@ def build_finnhub_fundamental_stats(company_name: str, ticker_str: str, profile:
     return {
         "symbol": ticker_str,
         "companyName": company_name,
-        "currency": "USD",
+        "currency": infer_currency_from_symbol(ticker_str),
         "currentPrice": "Data Not Available",
         "marketCap": "Data Not Available",
         "revenue": revenue or "Data Not Available",
@@ -286,10 +316,11 @@ def build_finnhub_fundamental_stats(company_name: str, ticker_str: str, profile:
     }
 
 
-def build_market_stats(company_name: str, ticker_str: str, summary_payload: dict, chart_payload: dict) -> dict:
+def build_market_stats(company_name: str, ticker_str: str, summary_payload: dict, chart_payload: dict, quote_payload: dict) -> dict:
     price_data = summary_payload.get("price", {}) if isinstance(summary_payload, dict) else {}
     financial_data = summary_payload.get("financialData", {}) if isinstance(summary_payload, dict) else {}
     asset_profile = summary_payload.get("assetProfile", {}) if isinstance(summary_payload, dict) else {}
+    chart_meta = chart_payload.get("meta", {}) if isinstance(chart_payload, dict) else {}
 
     def extract_value(value, default="Data Not Available"):
         if isinstance(value, dict):
@@ -304,13 +335,35 @@ def build_market_stats(company_name: str, ticker_str: str, summary_payload: dict
     current_price = extract_value(price_data.get("regularMarketPrice"))
     if current_price == "Data Not Available":
         current_price = extract_chart_price(chart_payload)
+    if current_price == "Data Not Available":
+        current_price = extract_value(quote_payload.get("regularMarketPrice"))
+
+    currency = extract_value(price_data.get("currency"), None)
+    if is_missing(currency):
+        currency = extract_value(chart_meta.get("currency"), None)
+    if is_missing(currency):
+        currency = extract_value(quote_payload.get("currency"), None)
+    if is_missing(currency):
+        currency = infer_currency_from_symbol(ticker_str)
+
+    company_display_name = extract_value(price_data.get("longName"), None)
+    if is_missing(company_display_name):
+        company_display_name = extract_value(quote_payload.get("longName"), None)
+    if is_missing(company_display_name):
+        company_display_name = extract_value(quote_payload.get("shortName"), company_name)
+
+    market_cap = extract_value(price_data.get("marketCap"))
+    if is_missing(market_cap):
+        market_cap = extract_value(chart_meta.get("marketCap"))
+    if is_missing(market_cap):
+        market_cap = extract_value(quote_payload.get("marketCap"))
 
     return {
         "symbol": ticker_str,
-        "companyName": extract_value(price_data.get("longName"), company_name),
-        "currency": extract_value(price_data.get("currency"), "USD"),
+        "companyName": company_display_name or company_name,
+        "currency": currency,
         "currentPrice": current_price,
-        "marketCap": extract_value(price_data.get("marketCap")),
+        "marketCap": market_cap,
         "revenue": extract_value(financial_data.get("totalRevenue")),
         "revenueGrowth": extract_value(financial_data.get("revenueGrowth")),
         "sector": extract_value(asset_profile.get("sector")),
@@ -327,6 +380,7 @@ def fetch_market_logic(company_name: str) -> str:
     try:
         summary_payload = {}
         chart_payload = {}
+        quote_payload = {}
 
         try:
             summary_payload = fetch_quote_summary_data(ticker_str)
@@ -338,7 +392,12 @@ def fetch_market_logic(company_name: str) -> str:
         except requests.RequestException as exc:
             logger.warning("Chart request failed for %s (%s): %s", company_name, ticker_str, exc)
 
-        market_stats = build_market_stats(company_name, ticker_str, summary_payload, chart_payload)
+        try:
+            quote_payload = fetch_quote_data(ticker_str)
+        except requests.RequestException as exc:
+            logger.warning("Quote request failed for %s (%s): %s", company_name, ticker_str, exc)
+
+        market_stats = build_market_stats(company_name, ticker_str, summary_payload, chart_payload, quote_payload)
         provider_fields: dict[str, list[str]] = {}
 
         yahoo_fields = [

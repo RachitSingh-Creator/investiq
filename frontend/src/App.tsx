@@ -245,7 +245,7 @@ function App() {
           {(hasOnlyPrice || unavailableCount > 0) && (
             <div className="market-data-note">
               {hasOnlyPrice
-                ? `Only the latest price is available right now for ${company}.`
+                ? `The live market feed returned only quote data for ${company} right now, so fundamentals like revenue, EBITDA, and sector are missing.`
                 : `Some live market fields are temporarily unavailable for ${company}.`}
             </div>
           )}
