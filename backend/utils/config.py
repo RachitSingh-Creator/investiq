@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # Market Data Fallback APIs
     alphavantage_api_key: str = Field(default="")
     finnhub_api_key: str = Field(default="")
+    eodhd_api_key: str = Field(default="")
     
     # Vector DB Config
     vector_db_type: str = Field(default="faiss")

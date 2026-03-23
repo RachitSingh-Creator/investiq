@@ -34,6 +34,20 @@ def infer_currency_from_symbol(ticker_str: str, fallback: str = "USD") -> str:
     return fallback
 
 
+def is_indian_equity(ticker_str: str) -> bool:
+    symbol = (ticker_str or "").upper()
+    return symbol.endswith(".NS") or symbol.endswith(".BO")
+
+
+def to_eodhd_symbol(ticker_str: str) -> str:
+    symbol = (ticker_str or "").upper()
+    if symbol.endswith(".NS"):
+        return f"{symbol[:-3]}.NSE"
+    if symbol.endswith(".BO"):
+        return f"{symbol[:-3]}.BSE"
+    return symbol
+
+
 def _empty_market_stats(company_name: str, ticker_str: str) -> dict:
     return {
         "symbol": ticker_str,
@@ -98,6 +112,19 @@ def fetch_quote_data(ticker_str: str) -> dict:
     payload = response.json()
     result = ((payload.get("quoteResponse") or {}).get("result") or [{}])[0]
     return result if isinstance(result, dict) else {}
+
+
+@lru_cache(maxsize=128)
+def fetch_eodhd_fundamentals(ticker_str: str) -> dict:
+    if not settings.eodhd_api_key or not is_indian_equity(ticker_str):
+        return {}
+
+    eodhd_symbol = to_eodhd_symbol(ticker_str)
+    url = f"https://eodhd.com/api/fundamentals/{eodhd_symbol}?api_token={settings.eodhd_api_key}&fmt=json"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
 
 
 def extract_chart_price(chart_payload: dict):
@@ -222,6 +249,11 @@ def _normalize_percentage_metric(value: float | None) -> float | None:
     return value
 
 
+def _extract_percentage(value):
+    numeric = _to_float(value)
+    return _normalize_percentage_metric(numeric)
+
+
 def _extract_finnhub_share_outstanding(profile: dict, metric_payload: dict) -> float | None:
     profile_outstanding = _to_float(profile.get("shareOutstanding")) if isinstance(profile, dict) else None
     if profile_outstanding is not None:
@@ -277,6 +309,128 @@ def _estimate_revenue_from_per_share(profile: dict, basic_financials: dict) -> f
         return None
 
     return sales_per_share * shares_outstanding
+
+
+def _extract_latest_statement_entries(financials_payload: dict, statement_key: str) -> list[dict]:
+    financials = financials_payload.get("Financials") if isinstance(financials_payload, dict) else None
+    if not isinstance(financials, dict):
+        return []
+
+    statement = financials.get(statement_key)
+    if not isinstance(statement, dict):
+        return []
+
+    entries: list[dict] = []
+    for period_key in ("yearly", "quarterly"):
+        period_data = statement.get(period_key)
+        if not isinstance(period_data, dict):
+            continue
+
+        sorted_keys = sorted(period_data.keys(), reverse=True)
+        for key in sorted_keys:
+            entry = period_data.get(key)
+            if isinstance(entry, dict):
+                entries.append(entry)
+
+    return entries
+
+
+def _extract_eodhd_revenue(fundamentals_payload: dict) -> float | None:
+    highlights = fundamentals_payload.get("Highlights") if isinstance(fundamentals_payload, dict) else {}
+    if isinstance(highlights, dict):
+        for key in ("RevenueTTM", "Revenue"):
+            value = _to_float(highlights.get(key))
+            if value is not None:
+                return value
+
+    revenue_keys = [
+        "totalRevenue",
+        "Revenue",
+        "revenue",
+        "sales",
+    ]
+    for entry in _extract_latest_statement_entries(fundamentals_payload, "Income_Statement"):
+        for key in revenue_keys:
+            value = _to_float(entry.get(key))
+            if value is not None:
+                return value
+
+    return None
+
+
+def _extract_eodhd_revenue_growth(fundamentals_payload: dict) -> float | None:
+    growth = fundamentals_payload.get("Growth") if isinstance(fundamentals_payload, dict) else {}
+    if isinstance(growth, dict):
+        for key in ("RevenueGrowthYOY", "QuarterlyRevenueGrowthYOY", "RevenueGrowthQuarterlyYoy"):
+            value = _extract_percentage(growth.get(key))
+            if value is not None:
+                return value
+
+    entries = _extract_latest_statement_entries(fundamentals_payload, "Income_Statement")
+    revenues: list[float] = []
+    for entry in entries:
+        for key in ("totalRevenue", "Revenue", "revenue", "sales"):
+            value = _to_float(entry.get(key))
+            if value is not None:
+                revenues.append(value)
+                break
+        if len(revenues) >= 2:
+            break
+
+    if len(revenues) >= 2 and revenues[1] not in (None, 0):
+        return (revenues[0] - revenues[1]) / revenues[1]
+
+    return None
+
+
+def _extract_eodhd_debt_to_equity(fundamentals_payload: dict) -> float | None:
+    balance_entries = _extract_latest_statement_entries(fundamentals_payload, "Balance_Sheet")
+    for entry in balance_entries:
+        debt = None
+        equity = None
+
+        for debt_key in ("totalDebt", "shortLongTermDebtTotal", "longTermDebt", "totalLiab"):
+            debt = _to_float(entry.get(debt_key))
+            if debt is not None:
+                break
+
+        for equity_key in ("totalStockholderEquity", "totalEquity", "commonStockEquity"):
+            equity = _to_float(entry.get(equity_key))
+            if equity is not None:
+                break
+
+        if debt is not None and equity not in (None, 0):
+            return debt / equity
+
+    return None
+
+
+def build_eodhd_fundamental_stats(company_name: str, ticker_str: str, fundamentals_payload: dict) -> dict:
+    general = fundamentals_payload.get("General") if isinstance(fundamentals_payload, dict) else {}
+    highlights = fundamentals_payload.get("Highlights") if isinstance(fundamentals_payload, dict) else {}
+
+    if not isinstance(general, dict):
+        general = {}
+    if not isinstance(highlights, dict):
+        highlights = {}
+
+    revenue = _extract_eodhd_revenue(fundamentals_payload)
+    revenue_growth = _extract_eodhd_revenue_growth(fundamentals_payload)
+    debt_to_equity = _extract_eodhd_debt_to_equity(fundamentals_payload)
+
+    return {
+        "symbol": ticker_str,
+        "companyName": general.get("Name", company_name),
+        "currency": general.get("CurrencyCode") or infer_currency_from_symbol(ticker_str),
+        "currentPrice": "Data Not Available",
+        "marketCap": _to_float(highlights.get("MarketCapitalization")) or "Data Not Available",
+        "revenue": revenue or "Data Not Available",
+        "revenueGrowth": revenue_growth if revenue_growth is not None else "Data Not Available",
+        "sector": general.get("Sector", "Data Not Available"),
+        "industry": general.get("Industry", "Data Not Available"),
+        "ebitda": _to_float(highlights.get("EBITDA")) or "Data Not Available",
+        "debtToEquity": debt_to_equity if debt_to_equity is not None else "Data Not Available",
+    }
 
 
 def build_finnhub_fundamental_stats(company_name: str, ticker_str: str, profile: dict, basic_financials: dict, financials: dict) -> dict:
@@ -471,8 +625,27 @@ def fetch_market_logic(company_name: str) -> str:
                         finnhub_fundamental_stats,
                     )
 
-            if finnhub_filled_fields:
-                provider_fields["finnhub"] = sorted(set(finnhub_filled_fields))
+        if finnhub_filled_fields:
+            provider_fields["finnhub"] = sorted(set(finnhub_filled_fields))
+
+        eodhd_missing = missing_fields(
+            market_stats,
+            ["marketCap", "revenue", "revenueGrowth", "sector", "industry", "ebitda", "debtToEquity"],
+        )
+        if eodhd_missing and settings.eodhd_api_key and is_indian_equity(ticker_str):
+            try:
+                eodhd_payload = fetch_eodhd_fundamentals(ticker_str)
+                if eodhd_payload:
+                    eodhd_stats = build_eodhd_fundamental_stats(company_name, ticker_str, eodhd_payload)
+                    eodhd_filled_fields = sorted(
+                        key for key, value in eodhd_stats.items()
+                        if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+                    )
+                    market_stats = merge_market_stats(market_stats, eodhd_stats)
+                    if eodhd_filled_fields:
+                        provider_fields["eodhd"] = eodhd_filled_fields
+            except requests.RequestException as exc:
+                logger.warning("EODHD fundamentals request failed for %s (%s): %s", company_name, ticker_str, exc)
 
         final_fields = [
             key for key, value in market_stats.items()

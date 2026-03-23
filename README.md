@@ -84,6 +84,14 @@ npm run dev
 - **Missing Data:** If extracted content is empty, natively intercepted via the agent orchestration layer falling back to `Generic Market Search`.
 - **Timeouts:** Aggressively regulated via `REQUEST_TIMEOUT`. Nested chains terminating strictly preventing locked asynchronous states gracefully mapping into `FALLBACK_MODE`.
 
+## Indian Market Fundamentals Fallback
+For Indian equities such as `.NS` and `.BO`, the backend can use a secondary fundamentals provider when Yahoo or Finnhub only returns quote-level data.
+
+Add this to `backend/.env` if you want richer Indian stock fundamentals:
+```env
+EODHD_API_KEY=your_eodhd_api_key
+```
+
 ## Security Note
 **In production, AWS credentials should be managed using IAM roles instead of environment variables for enhanced security.**
 

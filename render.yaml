@@ -48,6 +48,8 @@ services:
         value: gemini-2.5-flash
       - key: NEWSAPI_KEY
         sync: false
+      - key: EODHD_API_KEY
+        sync: false
 
   - type: web
     name: investiq-frontend
