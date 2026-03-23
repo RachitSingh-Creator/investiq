@@ -49,6 +49,16 @@ def to_eodhd_symbol(ticker_str: str) -> str:
     return symbol
 
 
+def alphavantage_symbol_candidates(ticker_str: str) -> list[str]:
+    symbol = (ticker_str or "").upper()
+    base = symbol.split(".")[0]
+    if is_indian_equity(symbol):
+        preferred = f"{base}.NSE" if symbol.endswith(".NS") else f"{base}.BSE"
+        alternate = f"{base}.BSE" if preferred.endswith(".NSE") else f"{base}.NSE"
+        return [preferred, alternate, base]
+    return [symbol]
+
+
 def _empty_market_stats(company_name: str, ticker_str: str) -> dict:
     return {
         "symbol": ticker_str,
@@ -127,6 +137,43 @@ def fetch_eodhd_fundamentals(ticker_str: str) -> dict:
     response.raise_for_status()
     payload = response.json()
     return payload if isinstance(payload, dict) else {}
+
+
+@lru_cache(maxsize=256)
+def fetch_alphavantage_overview(symbol: str) -> dict:
+    if not settings.alphavantage_api_key:
+        return {}
+
+    url = (
+        "https://www.alphavantage.co/query"
+        f"?function=OVERVIEW&symbol={symbol}&apikey={settings.alphavantage_api_key}"
+    )
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+def fetch_alphavantage_fundamentals(ticker_str: str) -> tuple[str | None, dict]:
+    if not settings.alphavantage_api_key:
+        return None, {}
+
+    for candidate in alphavantage_symbol_candidates(ticker_str):
+        try:
+            payload = fetch_alphavantage_overview(candidate)
+        except requests.RequestException as exc:
+            logger.warning("Alpha Vantage overview request failed for %s via %s: %s", ticker_str, candidate, exc)
+            continue
+
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("Note") or payload.get("Information") or payload.get("Error Message"):
+            logger.info("Alpha Vantage notice for %s via %s: %s", ticker_str, candidate, payload)
+            continue
+        if payload.get("Symbol") or payload.get("MarketCapitalization") or payload.get("Sector"):
+            return candidate, payload
+
+    return None, {}
 
 
 @lru_cache(maxsize=128)
@@ -472,6 +519,32 @@ def build_eodhd_fundamental_stats(company_name: str, ticker_str: str, fundamenta
     }
 
 
+def build_alphavantage_fundamental_stats(company_name: str, ticker_str: str, overview_payload: dict) -> dict:
+    market_cap = _to_float(overview_payload.get("MarketCapitalization"))
+    revenue = _to_float(overview_payload.get("RevenueTTM"))
+    ebitda = _to_float(overview_payload.get("EBITDA"))
+
+    revenue_growth = _extract_percentage(overview_payload.get("QuarterlyRevenueGrowthYOY"))
+    if revenue_growth is None:
+        revenue_growth = _extract_percentage(overview_payload.get("QuarterlyEarningsGrowthYOY"))
+
+    debt_to_equity = _extract_percentage(overview_payload.get("DebtToEquityRatio"))
+
+    return {
+        "symbol": ticker_str,
+        "companyName": overview_payload.get("Name") or company_name,
+        "currency": overview_payload.get("Currency") or infer_currency_from_symbol(ticker_str),
+        "currentPrice": "Data Not Available",
+        "marketCap": market_cap or "Data Not Available",
+        "revenue": revenue or "Data Not Available",
+        "revenueGrowth": revenue_growth if revenue_growth is not None else "Data Not Available",
+        "sector": overview_payload.get("Sector") or "Data Not Available",
+        "industry": overview_payload.get("Industry") or "Data Not Available",
+        "ebitda": ebitda or "Data Not Available",
+        "debtToEquity": debt_to_equity if debt_to_equity is not None else "Data Not Available",
+    }
+
+
 def _extract_yfinance_statement_values(statement_payload: dict, row_candidates: list[str]) -> list[float]:
     if not isinstance(statement_payload, dict):
         return []
@@ -762,6 +835,22 @@ def fetch_market_logic(company_name: str) -> str:
                         provider_fields["eodhd"] = eodhd_filled_fields
             except requests.RequestException as exc:
                 logger.warning("EODHD fundamentals request failed for %s (%s): %s", company_name, ticker_str, exc)
+
+        alphavantage_missing = missing_fields(
+            market_stats,
+            ["marketCap", "revenue", "revenueGrowth", "sector", "industry", "ebitda", "debtToEquity"],
+        )
+        if alphavantage_missing and settings.alphavantage_api_key and is_indian_equity(ticker_str):
+            av_symbol, alphavantage_payload = fetch_alphavantage_fundamentals(ticker_str)
+            if alphavantage_payload:
+                alphavantage_stats = build_alphavantage_fundamental_stats(company_name, ticker_str, alphavantage_payload)
+                alphavantage_filled_fields = sorted(
+                    key for key, value in alphavantage_stats.items()
+                    if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+                )
+                market_stats = merge_market_stats(market_stats, alphavantage_stats)
+                if alphavantage_filled_fields:
+                    provider_fields["alphavantage"] = alphavantage_filled_fields + ([f"symbol:{av_symbol}"] if av_symbol else [])
 
         yfinance_missing = missing_fields(
             market_stats,
