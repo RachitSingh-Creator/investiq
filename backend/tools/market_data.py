@@ -49,6 +49,16 @@ def to_eodhd_symbol(ticker_str: str) -> str:
     return symbol
 
 
+def eodhd_symbol_candidates(ticker_str: str) -> list[str]:
+    symbol = (ticker_str or "").upper()
+    base = symbol.split(".")[0]
+    if is_indian_equity(symbol):
+        preferred = to_eodhd_symbol(symbol)
+        alternate = f"{base}.BSE" if preferred.endswith(".NSE") else f"{base}.NSE"
+        return [preferred, alternate, base]
+    return [to_eodhd_symbol(symbol)]
+
+
 def alphavantage_symbol_candidates(ticker_str: str) -> list[str]:
     symbol = (ticker_str or "").upper()
     base = symbol.split(".")[0]
@@ -131,17 +141,39 @@ def fetch_quote_data(ticker_str: str) -> dict:
     return result if isinstance(result, dict) else {}
 
 
-@lru_cache(maxsize=128)
-def fetch_eodhd_fundamentals(ticker_str: str) -> dict:
-    if not settings.eodhd_api_key or not is_indian_equity(ticker_str):
+@lru_cache(maxsize=256)
+def fetch_eodhd_fundamentals_for_symbol(symbol: str) -> dict:
+    if not settings.eodhd_api_key:
         return {}
 
-    eodhd_symbol = to_eodhd_symbol(ticker_str)
-    url = f"https://eodhd.com/api/fundamentals/{eodhd_symbol}?api_token={settings.eodhd_api_key}&fmt=json"
+    url = f"https://eodhd.com/api/fundamentals/{symbol}?api_token={settings.eodhd_api_key}&fmt=json"
     response = requests.get(url, timeout=10)
     response.raise_for_status()
     payload = response.json()
     return payload if isinstance(payload, dict) else {}
+
+
+def fetch_eodhd_fundamentals(ticker_str: str) -> tuple[str | None, dict]:
+    if not settings.eodhd_api_key or not is_indian_equity(ticker_str):
+        return None, {}
+
+    for candidate in eodhd_symbol_candidates(ticker_str):
+        try:
+            payload = fetch_eodhd_fundamentals_for_symbol(candidate)
+        except requests.RequestException as exc:
+            logger.warning("EODHD fundamentals request failed for %s via %s: %s", ticker_str, candidate, exc)
+            continue
+
+        if not isinstance(payload, dict):
+            continue
+
+        general = payload.get("General", {}) if isinstance(payload.get("General"), dict) else {}
+        highlights = payload.get("Highlights", {}) if isinstance(payload.get("Highlights"), dict) else {}
+        financials = payload.get("Financials", {}) if isinstance(payload.get("Financials"), dict) else {}
+        if general or highlights or financials:
+            return candidate, payload
+
+    return None, {}
 
 
 @lru_cache(maxsize=256)
@@ -815,6 +847,19 @@ def fetch_market_logic(company_name: str) -> str:
         if yahoo_fields:
             provider_fields["yahoo"] = yahoo_fields
 
+        eodhd_filled_fields: list[str] = []
+        if settings.eodhd_api_key and is_indian_equity(ticker_str):
+            eodhd_symbol, eodhd_payload = fetch_eodhd_fundamentals(ticker_str)
+            if eodhd_payload:
+                eodhd_stats = build_eodhd_fundamental_stats(company_name, ticker_str, eodhd_payload)
+                eodhd_filled_fields = sorted(
+                    key for key, value in eodhd_stats.items()
+                    if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+                )
+                market_stats = merge_market_stats(market_stats, eodhd_stats)
+                if eodhd_filled_fields:
+                    provider_fields["eodhd"] = eodhd_filled_fields + ([f"symbol:{eodhd_symbol}"] if eodhd_symbol else [])
+
         finnhub_missing = missing_fields(
             market_stats,
             ["currentPrice", "marketCap", "sector", "revenue", "revenueGrowth", "ebitda", "debtToEquity"],
@@ -881,25 +926,6 @@ def fetch_market_logic(company_name: str) -> str:
 
         if finnhub_filled_fields:
             provider_fields["finnhub"] = sorted(set(finnhub_filled_fields))
-
-        eodhd_missing = missing_fields(
-            market_stats,
-            ["marketCap", "revenue", "revenueGrowth", "sector", "industry", "ebitda", "debtToEquity"],
-        )
-        if eodhd_missing and settings.eodhd_api_key and is_indian_equity(ticker_str):
-            try:
-                eodhd_payload = fetch_eodhd_fundamentals(ticker_str)
-                if eodhd_payload:
-                    eodhd_stats = build_eodhd_fundamental_stats(company_name, ticker_str, eodhd_payload)
-                    eodhd_filled_fields = sorted(
-                        key for key, value in eodhd_stats.items()
-                        if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
-                    )
-                    market_stats = merge_market_stats(market_stats, eodhd_stats)
-                    if eodhd_filled_fields:
-                        provider_fields["eodhd"] = eodhd_filled_fields
-            except requests.RequestException as exc:
-                logger.warning("EODHD fundamentals request failed for %s (%s): %s", company_name, ticker_str, exc)
 
         alphavantage_missing = missing_fields(
             market_stats,
