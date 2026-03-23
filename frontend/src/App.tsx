@@ -16,6 +16,12 @@ interface MarketData {
 interface AnalysisResult {
   companies: string[];
   market_data: Record<string, MarketData>;
+  company_scores: Record<string, {
+    score?: number;
+    confidence?: number;
+    stance?: string;
+    notes?: string[];
+  }>;
   news_summary: string;
   document_insights: string;
   risk_analysis: string;
@@ -254,6 +260,37 @@ function App() {
     });
   }
 
+  const renderCompanyScores = (companyScores: AnalysisResult['company_scores']) => {
+    if (!companyScores || Object.keys(companyScores).length === 0) return <p>No scorecard available.</p>;
+
+    return Object.entries(companyScores).map(([company, scorecard]) => (
+      <div key={company} className="market-data-company">
+        <h3 style={{ color: 'var(--text-main)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem' }}>
+          {company}
+        </h3>
+        <div className="market-data-grid">
+          <div className="market-metric">
+            <span className="metric-label">Score</span>
+            <span className="metric-value">{typeof scorecard.score === 'number' ? `${scorecard.score}/100` : 'N/A'}</span>
+          </div>
+          <div className="market-metric">
+            <span className="metric-label">Confidence</span>
+            <span className="metric-value">{typeof scorecard.confidence === 'number' ? `${scorecard.confidence}%` : 'N/A'}</span>
+          </div>
+          <div className="market-metric">
+            <span className="metric-label">Stance</span>
+            <span className="metric-value">{scorecard.stance ?? 'N/A'}</span>
+          </div>
+        </div>
+        {Array.isArray(scorecard.notes) && scorecard.notes.length > 0 && (
+          <div className="market-data-note">
+            {scorecard.notes.join('; ')}.
+          </div>
+        )}
+      </div>
+    ))
+  }
+
   return (
     <div className="app-container">
       <header>
@@ -364,6 +401,12 @@ function App() {
           {result.market_data && Object.keys(result.market_data).length > 0 && (
             <CollapsibleCard title="Market Data" icon={Activity} accentColor="#60a5fa">
               {renderMarketData(result.market_data)}
+            </CollapsibleCard>
+          )}
+
+          {result.company_scores && Object.keys(result.company_scores).length > 0 && (
+            <CollapsibleCard title="Scorecard" icon={Activity} accentColor="#34d399">
+              {renderCompanyScores(result.company_scores)}
             </CollapsibleCard>
           )}
 

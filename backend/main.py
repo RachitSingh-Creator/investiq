@@ -33,6 +33,7 @@ app.add_middleware(
 class AnalyzeResponse(BaseModel):
     companies: List[str]
     market_data: dict
+    company_scores: dict
     news_summary: str
     document_insights: str
     risk_analysis: str

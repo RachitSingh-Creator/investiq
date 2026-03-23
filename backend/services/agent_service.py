@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 class AnalysisOutput(BaseModel):
     companies: List[str] = Field(description="List of companies identified.")
     market_data: Dict[str, Any] = Field(description="Market data payload extracted for companies. Provide it as a dictionary keyed by company name.")
+    company_scores: Dict[str, Any] = Field(default_factory=dict, description="Per-company score and confidence summary keyed by company name.")
     news_summary: str = Field(description="A concise summary of all recent news retrieved, highlighting key events and sentiment.")
     document_insights: str = Field(description="Any insights or specific points found in the provided documents. If none found or provided, explicitly state so.")
     risk_analysis: str = Field(description="Risk analysis paragraph.")
@@ -66,6 +67,127 @@ class AgentService:
 
         joined = ", ".join(weak_companies)
         return f"Comparison is limited because full financial data is unavailable or incomplete for {joined}."
+
+    def _company_specific_risks(self, company: str, market_snapshot: Dict[str, Any]) -> list[str]:
+        company_lower = str(company).lower()
+        sector = self._normalize_sector_label(company, market_snapshot.get("sector"), market_snapshot.get("industry")).lower()
+        industry = str(market_snapshot.get("industry") or "").lower()
+        risks: list[str] = []
+
+        if "meta" in company_lower or "social" in industry or "internet content" in industry:
+            risks.extend([
+                "advertising demand can weaken if marketers reduce spending",
+                "AI infrastructure spending can pressure margins if returns take time to materialize",
+                "privacy and platform regulation can affect monetization and user growth",
+            ])
+        elif "reliance" in company_lower or "energy" in sector or "oil" in industry or "refin" in industry:
+            risks.extend([
+                "energy and commodity price swings can affect refining and petrochemical profitability",
+                "large capex programs can delay returns if execution or demand weakens",
+                "conglomerate complexity can make capital allocation harder to evaluate",
+            ])
+        elif "communication services" in sector:
+            risks.extend([
+                "platform engagement and monetization can change quickly with competition and regulation",
+            ])
+
+        # Keep the list short and readable.
+        return risks[:3]
+
+    def _compute_company_score(self, company: str, market_snapshot: Dict[str, Any], news_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        score = 50
+        confidence = 35
+        notes: list[str] = []
+
+        revenue_growth = market_snapshot.get("revenueGrowth")
+        debt_to_equity = market_snapshot.get("debtToEquity")
+        source_quality = news_snapshot.get("source_quality", "low")
+        sentiment = news_snapshot.get("sentiment", "neutral")
+
+        filled_fields = 0
+        for key in ("marketCap", "revenue", "revenueGrowth", "sector", "industry", "ebitda", "debtToEquity"):
+            if market_snapshot.get(key) not in (None, "", "Data Not Available", "N/A"):
+                filled_fields += 1
+
+        confidence += min(35, filled_fields * 8)
+        if isinstance(revenue_growth, (int, float)):
+            if revenue_growth >= 0.15:
+                score += 18
+                notes.append("strong growth")
+            elif revenue_growth >= 0.05:
+                score += 10
+                notes.append("positive growth")
+            elif revenue_growth < 0:
+                score -= 18
+                notes.append("negative growth")
+            else:
+                score += 2
+                notes.append("modest growth")
+        else:
+            score -= 12
+            confidence -= 12
+            notes.append("growth data incomplete")
+
+        if isinstance(debt_to_equity, (int, float)):
+            if debt_to_equity <= 1:
+                score += 10
+                notes.append("low leverage")
+            elif debt_to_equity <= 3:
+                score += 3
+                notes.append("manageable leverage")
+            else:
+                score -= 10
+                notes.append("elevated leverage")
+        else:
+            confidence -= 10
+            notes.append("balance sheet data incomplete")
+
+        if sentiment == "positive":
+            score += 5
+            notes.append("supportive news tone")
+        elif sentiment == "negative":
+            score -= 8
+            notes.append("negative news tone")
+
+        if source_quality == "high":
+            confidence += 12
+        elif source_quality == "medium":
+            confidence += 4
+        else:
+            confidence -= 8
+            notes.append("mixed or weak news sources")
+
+        if not self._company_has_strong_fundamentals(market_snapshot):
+            score -= 10
+            confidence -= 15
+            notes.append("limited fundamental coverage")
+
+        score = max(0, min(100, int(round(score))))
+        confidence = max(10, min(95, int(round(confidence))))
+
+        if score >= 75:
+            stance = "strong"
+        elif score >= 60:
+            stance = "constructive"
+        elif score >= 45:
+            stance = "watchful"
+        else:
+            stance = "avoid decision"
+
+        return {
+            "score": score,
+            "confidence": confidence,
+            "stance": stance,
+            "notes": notes[:4],
+        }
+
+    def _build_company_scores(self, companies: List[str], market_data: Dict[str, Any], news_data: Dict[str, Any]) -> Dict[str, Any]:
+        scorecard: Dict[str, Any] = {}
+        for company in companies:
+            market_snapshot = market_data.get(company, {}) if isinstance(market_data, dict) else {}
+            news_snapshot = news_data.get(company, {}) if isinstance(news_data, dict) else {}
+            scorecard[company] = self._compute_company_score(company, market_snapshot, news_snapshot)
+        return scorecard
 
     def _build_positioning_hint(self, company: str, market_snapshot: Dict[str, Any], news_snapshot: Dict[str, Any]) -> str | None:
         sector = self._normalize_sector_label(company, market_snapshot.get("sector"), market_snapshot.get("industry"))
@@ -123,6 +245,8 @@ class AgentService:
                 parsed.companies = ["Generic Market Search"]
             if not parsed.market_data:
                 parsed.market_data = {"error": "Failed to explicitly gather deep financial data bounds natively."}
+            if parsed.company_scores is None:
+                parsed.company_scores = {}
             if not parsed.news_summary or len(parsed.news_summary) < 5:
                 parsed.news_summary = "No significant news summary could be formulated properly."
             if not parsed.risk_analysis or len(parsed.risk_analysis) < 5:
@@ -298,6 +422,7 @@ class AgentService:
             has_news = bool(news_snapshot.get("articles"))
             source_quality = news_snapshot.get("source_quality", "low")
             price = market_snapshot.get("currentPrice", "Data Not Available")
+            specific_risks = self._company_specific_risks(company, market_snapshot)
 
             missing_growth = not isinstance(revenue_growth, (int, float))
             missing_debt = not isinstance(debt_to_equity, (int, float))
@@ -314,6 +439,8 @@ class AgentService:
                     summary += " Recent news tone is neutral."
                 if source_quality != "high":
                     summary += " News reliability is mixed, so headline signals should be treated cautiously."
+                if specific_risks:
+                    summary += " Key business risks include " + "; ".join(specific_risks) + "."
                 extra_risk = self._build_risk_hint(company, market_snapshot, news_snapshot)
                 if extra_risk:
                     summary += f" {extra_risk}"
@@ -350,6 +477,7 @@ class AgentService:
                 company_risks.append(f"the {sector} sector can change quickly because of competition, execution risk, and shifts in demand")
             else:
                 company_risks.append("competition, execution risk, and demand shifts can still change the outlook quickly")
+            company_risks.extend(self._company_specific_risks(company, market_snapshot)[:2])
             sentence = f"- {company}: The main risks are " + ", ".join(company_risks) + "."
             extra_risk = self._build_risk_hint(company, market_snapshot, news_snapshot)
             if extra_risk:
@@ -379,6 +507,7 @@ class AgentService:
         for company in companies:
             market_snapshot = market_data.get(company, {}) if isinstance(market_data, dict) else {}
             news_snapshot = news_data.get(company, {}) if isinstance(news_data, dict) else {}
+            score_snapshot = self._compute_company_score(company, market_snapshot, news_snapshot)
 
             price = market_snapshot.get("currentPrice", "N/A")
             revenue_growth = market_snapshot.get("revenueGrowth")
@@ -396,6 +525,7 @@ class AgentService:
             if missing_growth and missing_debt and missing_sector:
                 recommendations.append(
                     f"- {company}: Current view is avoid decision for now. Price is {price}. "
+                    f"Score: {score_snapshot['score']}/100. Confidence: {score_snapshot['confidence']}%. "
                     f"Reason: only limited live market data was available, so this is a low-confidence view, and recent news tone is {sentiment}."
                 )
                 continue
@@ -429,6 +559,7 @@ class AgentService:
             recommendation = (
                 f"- {company}: Current view is {stance}. "
                 f"Price is {price}. "
+                f"Score: {score_snapshot['score']}/100. Confidence: {score_snapshot['confidence']}%. "
                 f"Reason: {reason_text}"
             )
             if qualitative_note:
@@ -453,10 +584,12 @@ class AgentService:
         news_data: Dict[str, Any],
         document_insights: str,
     ) -> AnalysisOutput:
+        company_scores = self._build_company_scores(companies, market_data, news_data)
         try:
             parsed = parser.parse(raw_content)
             parsed.companies = companies
             parsed.market_data = market_data
+            parsed.company_scores = company_scores
             if not parsed.document_insights:
                 parsed.document_insights = document_insights
             return self._validate_data(parsed)
@@ -467,6 +600,7 @@ class AgentService:
         parsed = AnalysisOutput(
             companies=companies,
             market_data=market_data,
+            company_scores=company_scores,
             news_summary=partial.get("news_summary") or self._build_grounded_news_summary(companies, news_data),
             document_insights=partial.get("document_insights") or document_insights,
             risk_analysis=partial.get("risk_analysis") or self._build_grounded_risk_analysis(companies, market_data, news_data, document_insights),
@@ -504,6 +638,7 @@ class AgentService:
             "query": query,
             "companies": companies,
             "market_data": market_data,
+            "company_scores": self._build_company_scores(companies, market_data, news_data),
             "news_data": news_data,
             "document_insights": document_insights,
         }
@@ -515,6 +650,7 @@ class AgentService:
         Rules:
         - Keep "companies" exactly as provided.
         - Keep "market_data" as the provided dictionary keyed by company name.
+        - Keep "company_scores" aligned with the supplied scorecard.
         - Return only JSON. Do not add markdown, commentary, or code fences.
         - Every required field must be present.
         - "news_summary" should synthesize the company news payloads into a concise readable summary with no hype.
@@ -563,6 +699,7 @@ class AgentService:
             fallback = AnalysisOutput(
                 companies=companies,
                 market_data=market_data,
+                company_scores=self._build_company_scores(companies, market_data, news_data),
                 news_summary="Plaintext mode enabled. See final recommendation.",
                 document_insights=document_insights,
                 risk_analysis="Plaintext mode enabled. See final recommendation.",
@@ -577,6 +714,7 @@ class AgentService:
         fallback = AnalysisOutput(
             companies=companies,
             market_data=market_data,
+            company_scores=self._build_company_scores(companies, market_data, news_data),
             news_summary=self._build_grounded_news_summary(companies, news_data),
             document_insights=document_insights,
             risk_analysis=self._build_grounded_risk_analysis(companies, market_data, news_data, document_insights),
