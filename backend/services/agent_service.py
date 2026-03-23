@@ -78,11 +78,15 @@ class AgentService:
         return None
 
     async def _gather_company_context(self, companies: List[str]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        market_semaphore = asyncio.Semaphore(1)
+
         async def gather(company_name: str) -> tuple[str, Dict[str, Any], Dict[str, Any]]:
-            market_raw, news_raw = await asyncio.gather(
-                asyncio.to_thread(safe_execute_sync, fetch_market_logic, "market_data", company_name),
-                asyncio.to_thread(safe_execute_sync, fetch_and_analyze_news, "news", company_name),
-            )
+            news_task = asyncio.to_thread(safe_execute_sync, fetch_and_analyze_news, "news", company_name)
+
+            async with market_semaphore:
+                market_raw = await asyncio.to_thread(safe_execute_sync, fetch_market_logic, "market_data", company_name)
+
+            news_raw = await news_task
 
             market_payload = self._parse_json_payload(market_raw, "market_data", company_name)
             news_payload = self._parse_json_payload(news_raw, "news", company_name)
