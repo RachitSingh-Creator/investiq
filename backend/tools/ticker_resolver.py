@@ -29,6 +29,8 @@ def _score_quote(company_name: str, quote: dict) -> float:
     long_name = str(quote.get("longname") or quote.get("longName") or "")
     exchange = str(quote.get("exchange") or quote.get("exchDisp") or "")
     quote_type = str(quote.get("quoteType") or "")
+    exchange_lower = exchange.lower()
+    symbol_lower = symbol.lower()
 
     normalized_symbol = _normalize_text(symbol)
     base_symbol = symbol.split(".")[0].lower()
@@ -87,6 +89,16 @@ def _score_quote(company_name: str, quote: dict) -> float:
     preferred_exchange_markers = {"nasdaq", "nyse", "nse", "bse", "etra", "xetra", "tse", "tyo", "lon", "ams", "epa"}
     if any(marker in exchange.lower() for marker in preferred_exchange_markers):
         score += 5
+
+    india_company_terms = {
+        "reliance", "tcs", "tata consultancy", "infosys", "hdfc", "icici", "wipro",
+        "sbi", "bharti", "adani", "lt", "larsen", "axis bank", "kotak", "itc",
+    }
+    if any(term in lowered_query for term in india_company_terms) and not query_is_symbol_like:
+        if symbol_lower.endswith(".ns") or "nse" in exchange_lower:
+            score += 18
+        if symbol_lower.endswith(".bo") or "bse" in exchange_lower:
+            score -= 4
 
     yahoo_score = quote.get("score")
     if isinstance(yahoo_score, (int, float)):

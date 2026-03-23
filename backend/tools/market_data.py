@@ -59,6 +59,11 @@ def alphavantage_symbol_candidates(ticker_str: str) -> list[str]:
     return [symbol]
 
 
+def to_nse_symbol(ticker_str: str) -> str:
+    symbol = (ticker_str or "").upper()
+    return symbol.split(".")[0]
+
+
 def _empty_market_stats(company_name: str, ticker_str: str) -> dict:
     return {
         "symbol": ticker_str,
@@ -174,6 +179,29 @@ def fetch_alphavantage_fundamentals(ticker_str: str) -> tuple[str | None, dict]:
             return candidate, payload
 
     return None, {}
+
+
+@lru_cache(maxsize=128)
+def fetch_nsepython_quote(ticker_str: str) -> dict:
+    if not is_indian_equity(ticker_str):
+        return {}
+
+    nse_symbol = to_nse_symbol(ticker_str)
+    try:
+        from nsepythonserver import nse_eq  # type: ignore
+    except Exception:
+        try:
+            from nsepython import nse_eq  # type: ignore
+        except Exception as exc:
+            logger.warning("NSEPython import failed for %s: %s", ticker_str, exc)
+            return {}
+
+    try:
+        payload = nse_eq(nse_symbol)
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        logger.warning("NSEPython quote request failed for %s (%s): %s", ticker_str, nse_symbol, exc)
+        return {}
 
 
 @lru_cache(maxsize=128)
@@ -545,6 +573,43 @@ def build_alphavantage_fundamental_stats(company_name: str, ticker_str: str, ove
     }
 
 
+def build_nsepython_stats(company_name: str, ticker_str: str, payload: dict) -> dict:
+    price_info = payload.get("priceInfo", {}) if isinstance(payload, dict) else {}
+    metadata = payload.get("metadata", {}) if isinstance(payload, dict) else {}
+    security_info = payload.get("securityInfo", {}) if isinstance(payload, dict) else {}
+
+    if not isinstance(price_info, dict):
+        price_info = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if not isinstance(security_info, dict):
+        security_info = {}
+
+    trade_info_payload = {}
+    market_dept = payload.get("marketDeptOrderBook") if isinstance(payload, dict) else {}
+    if isinstance(market_dept, dict):
+        trade_info_payload = market_dept.get("tradeInfo", {}) if isinstance(market_dept.get("tradeInfo"), dict) else {}
+
+    market_cap_crore = _first_numeric([
+        trade_info_payload.get("totalMarketCap"),
+    ])
+    market_cap = market_cap_crore * 10_000_000 if market_cap_crore is not None else None
+
+    return {
+        "symbol": ticker_str,
+        "companyName": metadata.get("companyName") or security_info.get("companyName") or company_name,
+        "currency": "INR",
+        "currentPrice": _first_numeric([price_info.get("lastPrice")]) or "Data Not Available",
+        "marketCap": market_cap or "Data Not Available",
+        "revenue": "Data Not Available",
+        "revenueGrowth": "Data Not Available",
+        "sector": metadata.get("industry") or metadata.get("pdSectorInd") or "Data Not Available",
+        "industry": metadata.get("industry") or metadata.get("pdSectorInd") or "Data Not Available",
+        "ebitda": "Data Not Available",
+        "debtToEquity": "Data Not Available",
+    }
+
+
 def _extract_yfinance_statement_values(statement_payload: dict, row_candidates: list[str]) -> list[float]:
     if not isinstance(statement_payload, dict):
         return []
@@ -851,6 +916,22 @@ def fetch_market_logic(company_name: str) -> str:
                 market_stats = merge_market_stats(market_stats, alphavantage_stats)
                 if alphavantage_filled_fields:
                     provider_fields["alphavantage"] = alphavantage_filled_fields + ([f"symbol:{av_symbol}"] if av_symbol else [])
+
+        nsepython_missing = missing_fields(
+            market_stats,
+            ["currentPrice", "marketCap", "sector", "industry"],
+        )
+        if nsepython_missing and is_indian_equity(ticker_str):
+            nsepython_payload = fetch_nsepython_quote(ticker_str)
+            if nsepython_payload:
+                nsepython_stats = build_nsepython_stats(company_name, ticker_str, nsepython_payload)
+                nsepython_filled_fields = sorted(
+                    key for key, value in nsepython_stats.items()
+                    if key not in {"symbol", "companyName", "currency"} and not is_missing(value)
+                )
+                market_stats = merge_market_stats(market_stats, nsepython_stats)
+                if nsepython_filled_fields:
+                    provider_fields["nsepython"] = nsepython_filled_fields
 
         yfinance_missing = missing_fields(
             market_stats,

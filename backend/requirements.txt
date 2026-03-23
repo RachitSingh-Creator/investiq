@@ -16,3 +16,4 @@ sentence-transformers
 python-dotenv
 mangum
 python-multipart
+nsepythonserver
