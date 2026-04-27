@@ -1,3 +1,7 @@
 backend/.env
+frontend/.env
 __pycache__/
 *.pyc
+*.log
+frontend/node_modules/
+frontend/dist/

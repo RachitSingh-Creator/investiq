@@ -2,8 +2,19 @@ import { useState, useCallback, useEffect, type ReactNode } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDropzone } from 'react-dropzone'
 import {
-  Upload, X, Activity, Newspaper, FileText,
-  ShieldAlert, CheckCircle, ChevronDown, ChevronUp, Search, type LucideIcon
+  Upload,
+  X,
+  Activity,
+  Newspaper,
+  FileText,
+  ShieldAlert,
+  CheckCircle,
+  ChevronDown,
+  ChevronUp,
+  Search,
+  Sparkles,
+  AlertTriangle,
+  type LucideIcon,
 } from 'lucide-react'
 import './index.css'
 
@@ -38,6 +49,8 @@ interface AnalysisResult {
   used_fallback: boolean;
 }
 
+const API_URL = import.meta.env.VITE_API_BASE_URL || '/api'
+
 const getResultNoticeTone = (message: string) => {
   const lowered = message.toLowerCase()
   if (lowered.includes('quota') || lowered.includes('timed out')) return 'warning'
@@ -49,6 +62,8 @@ const shouldShowFallbackNotice = (result: AnalysisResult) => {
   if (!result.used_fallback || !result.llm_status) return false
   return !result.news_summary?.trim() || !result.risk_analysis?.trim() || !result.final_recommendation?.trim()
 }
+
+const providerLabel = import.meta.env.VITE_MODEL_PROVIDER_LABEL || 'Gemini'
 
 // Reusable Collapsible Card Component
 interface CollapsibleCardProps {
@@ -144,85 +159,82 @@ const formatMetricValue = (key: string, value: MarketValue, currencyCode?: strin
 }
 
 function App() {
-  const [query, setQuery] = useState('');
-  const [files, setFiles] = useState<File[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loadingStep, setLoadingStep] = useState('');
-  const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [error, setError] = useState('');
+  const [query, setQuery] = useState('')
+  const [files, setFiles] = useState<File[]>([])
+  const [loading, setLoading] = useState(false)
+  const [loadingStep, setLoadingStep] = useState('')
+  const [result, setResult] = useState<AnalysisResult | null>(null)
+  const [error, setError] = useState('')
 
-  // Step-based loading states simulation
   useEffect(() => {
-    if (!loading) return;
+    if (!loading) return
     const steps = [
-      "Extracting companies...",
-      "Resolving financial tickers...",
-      "Fetching real-time market data...",
-      "Analyzing latest news & sentiment...",
-      "Generating final insights..."
-    ];
-    let i = 0;
-    setLoadingStep(steps[i]);
+      'Parsing your request...',
+      'Collecting market snapshots...',
+      'Evaluating risk and sentiment...',
+      'Building recommendation...',
+    ]
+    let i = 0
+    setLoadingStep(steps[i])
     const interval = setInterval(() => {
-      i = Math.min(i + 1, steps.length - 1);
-      setLoadingStep(steps[i]);
-    }, 2500);
-    return () => clearInterval(interval);
-  }, [loading]);
+      i = Math.min(i + 1, steps.length - 1)
+      setLoadingStep(steps[i])
+    }, 2200)
+    return () => clearInterval(interval)
+  }, [loading])
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    setFiles(prev => [...prev, ...acceptedFiles]);
-  }, []);
+    setFiles((prev) => [...prev, ...acceptedFiles])
+  }, [])
 
   const removeFile = (name: string) => {
-    setFiles(files.filter(f => f.name !== name));
-  };
+    setFiles(files.filter((f) => f.name !== name))
+  }
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { 'application/pdf': ['.pdf'], 'text/plain': ['.txt'] }
-  });
+    accept: { 'application/pdf': ['.pdf'], 'text/plain': ['.txt'] },
+  })
 
   const handleAnalyze = async () => {
-    if (!query.trim()) return;
-    setLoading(true);
-    setError('');
-    setResult(null);
-    
+    if (!query.trim()) return
+    setLoading(true)
+    setError('')
+    setResult(null)
+
     try {
-      const formData = new FormData();
-      formData.append('query', query);
-      
+      const formData = new FormData()
+      formData.append('query', query)
+
       if (files.length > 0) {
-        files.forEach(file => formData.append('documents', file));
+        files.forEach((file) => formData.append('documents', file))
       } else {
-        formData.append('documents', new Blob([''], { type: 'application/octet-stream' }), '');
+        formData.append('documents', new Blob([''], { type: 'application/octet-stream' }), '')
       }
 
-      const API_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
       const response = await fetch(`${API_URL}/analyze`, {
         method: 'POST',
         body: formData,
-      });
+      })
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || ('Analysis request failed: ' + response.statusText));
+        const errorText = await response.text()
+        throw new Error(errorText || 'Analysis request failed: ' + response.statusText)
       }
 
-      const data: AnalysisResult = await response.json();
-      setResult(data);
+      const data: AnalysisResult = await response.json()
+      setResult(data)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'An error occurred during analysis.'
-      setError(message);
+      setError(message)
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
   }
 
   const renderMarketData = (marketData: Record<string, MarketData>) => {
-    if (!marketData || Object.keys(marketData).length === 0) return <p>No market data available.</p>;
-    
+    if (!marketData || Object.keys(marketData).length === 0) return <p>No market data available.</p>
+
     return Object.entries(marketData).map(([company, data]) => {
       const metrics = Object.entries(data)
         .filter(([k]) => k !== 'symbol' && k !== 'companyName' && k !== 'currency' && !k.startsWith('_'))
@@ -269,7 +281,7 @@ function App() {
   }
 
   const renderCompanyScores = (companyScores: AnalysisResult['company_scores']) => {
-    if (!companyScores || Object.keys(companyScores).length === 0) return <p>No scorecard available.</p>;
+    if (!companyScores || Object.keys(companyScores).length === 0) return <p>No scorecard available.</p>
 
     return Object.entries(companyScores).map(([company, scorecard]) => (
       <div key={company} className="market-data-company">
@@ -329,19 +341,27 @@ function App() {
 
   return (
     <div className="app-container">
-      <header>
+      <header className="hero">
+        <motion.div
+          className="hero-chip"
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
+          <Sparkles size={14} />
+          Powered by {providerLabel}
+        </motion.div>
         <motion.h1 
           initial={{ opacity: 0, y: -20 }} 
           animate={{ opacity: 1, y: 0 }}
         >
-          InvestIQ AI
+          InvestIQ Command Center
         </motion.h1>
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.2 }}
         >
-          AI-Powered Investment Intelligence
+          Professional-grade market intelligence with document-aware analysis.
         </motion.p>
       </header>
 
@@ -351,9 +371,14 @@ function App() {
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.4 }}
       >
+        <div className="search-title-row">
+          <h2>Start New Analysis</h2>
+          <span className="helper-label">Backend connected via `{API_URL}`</span>
+        </div>
+
         <textarea
           className="search-input"
-          placeholder="e.g. Analyze Nvidia vs AMD hardware revenue growth over the next year focusing on AI market risks."
+          placeholder="Example: Compare Nvidia and AMD on growth quality, margin durability, and downside risk over 12 months."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -361,14 +386,14 @@ function App() {
         <div {...getRootProps()} className={`dropzone ${isDragActive ? 'active' : ''}`}>
           <input {...getInputProps()} />
           <Upload size={32} color={isDragActive ? "var(--accent)" : "var(--text-muted)"} />
-          <p>{isDragActive ? "Drop files here" : "Drag & drop financial PDFs or click to upload context"}</p>
+          <p>{isDragActive ? 'Drop files here' : 'Drag & drop PDFs/TXT or click to upload supporting context'}</p>
         </div>
 
         {files.length > 0 && (
           <div className="dropdown-files">
             {files.map(f => (
               <div key={f.name} className="file-item">
-                <span>📄 {f.name}</span>
+                <span>{f.name}</span>
                 <X size={16} style={{ cursor: 'pointer', color: 'var(--danger)' }} onClick={() => removeFile(f.name)} />
               </div>
             ))}
@@ -386,7 +411,8 @@ function App() {
       </motion.div>
 
       {error && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ color: 'var(--danger)', marginBottom: '2rem', textAlign: 'center', fontWeight: 'bold' }}>
+        <motion.div className="error-banner" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+          <AlertTriangle size={16} />
           {error}
         </motion.div>
       )}

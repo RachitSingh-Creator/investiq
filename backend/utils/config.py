@@ -3,7 +3,7 @@ from pydantic import Field
 import logging
 
 class Settings(BaseSettings):
-    # AWS Bedrock Config
+    # AWS Bedrock Config (optional when MODEL_PROVIDER=bedrock)
     aws_access_key_id: str = Field(default="dummy")
     aws_secret_access_key: str = Field(default="dummy")
     aws_region: str = Field(default="eu-north-1")
@@ -11,10 +11,10 @@ class Settings(BaseSettings):
 
     # Google Gemini Config
     google_api_key: str = Field(default="dummy")
-    gemini_model: str = Field(default="gemini-1.5-flash")
+    gemini_model: str = Field(default="gemini-2.5-flash")
     
     # Model Config
-    model_provider: str = Field(default="bedrock")
+    model_provider: str = Field(default="gemini")
     model_temperature: float = Field(default=0.0)
     model_max_tokens: int = Field(default=1024)
     
